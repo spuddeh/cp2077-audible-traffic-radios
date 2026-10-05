@@ -442,6 +442,10 @@ struct MeterReading
     std::atomic<float> a{0.0f};
     std::atomic<float> b{0.0f};
     std::atomic<float> maxA{0.0f};
+    std::atomic<uint32_t> calls{0};
+    std::atomic<uint32_t> channels{0};
+    std::atomic<float> raw{0.0f};
+    std::atomic<uint32_t> bus{0};
 };
 MeterReading g_npcMeter;
 MeterReading g_worldMeter;
@@ -451,6 +455,12 @@ void ReadMeter(void* aInfo, MeterReading& aOut)
     const auto info = reinterpret_cast<uintptr_t>(aInfo);
     const auto metering = *reinterpret_cast<uintptr_t*>(info + 0x10);
     const auto channels = *reinterpret_cast<uint8_t*>(info + 0x18);
+    aOut.calls.fetch_add(1);
+    aOut.channels.store(*reinterpret_cast<uint32_t*>(info + 0x18));
+    if (metering && *reinterpret_cast<float**>(metering))
+    {
+        aOut.raw.store(**reinterpret_cast<float**>(metering));
+    }
     if (!metering || !channels)
     {
         return;
@@ -492,6 +502,8 @@ std::string Db(float aLinear)
     return buf;
 }
 
+RegisterMeterFn g_registerMeter = nullptr;
+
 void MeterTick()
 {
     static bool registered = false;
@@ -504,9 +516,18 @@ void MeterTick()
             Log("meter: RegisterBusMeteringCallback did not match this build");
             return;
         }
+        g_registerMeter = reg;
+        g_npcMeter.bus = kNpcRadioBus;
+        g_worldMeter.bus = kWorldRadioBus;
         Log("meter: npc bus " + std::to_string(reg(kNpcRadioBus, &NpcMeterCallback, kMeterPeakAndRms, nullptr)) +
             ", world bus " + std::to_string(reg(kWorldRadioBus, &WorldMeterCallback, kMeterPeakAndRms, nullptr)));
     }
+    char diag[160];
+    std::snprintf(diag, sizeof(diag), "meter: calls npc %u (cfg %08x raw %g)  bus %u: %u (cfg %08x raw %g)",
+                  g_npcMeter.calls.exchange(0), g_npcMeter.channels.load(), g_npcMeter.raw.load(),
+                  g_worldMeter.bus.load(), g_worldMeter.calls.exchange(0), g_worldMeter.channels.load(),
+                  g_worldMeter.raw.load());
+    Log(diag);
     Log("meter: npc " + Db(g_npcMeter.a.load()) + "/" + Db(g_npcMeter.b.load()) + " dB (max " +
         Db(g_npcMeter.maxA.exchange(0.0f)) + ")  world " + Db(g_worldMeter.a.load()) + "/" +
         Db(g_worldMeter.b.load()) + " dB (max " + Db(g_worldMeter.maxA.exchange(0.0f)) + ")");
@@ -553,6 +574,17 @@ void DevTick()
             if (!a.empty() && g_devBanks.insert(a).second)
             {
                 LoadBankFile(a);
+            }
+        }
+        else if (verb == "meter")
+        {
+            uint32_t bus = 0;
+            words >> bus;
+            if (g_registerMeter && bus)
+            {
+                g_worldMeter.bus = bus;
+                Log("dev: meter on bus " + std::to_string(bus) + " -> " +
+                    std::to_string(g_registerMeter(bus, &WorldMeterCallback, kMeterPeakAndRms, nullptr)));
             }
         }
         else if (verb == "fast" || verb == "gain")
