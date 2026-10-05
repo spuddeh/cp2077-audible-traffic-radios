@@ -1,0 +1,16 @@
+# Claude Code (local only - never commit; these are internal notes)
+CLAUDE.md
+
+# Build output
+plugin/build/
+
+# Nexus page images
+images/
+
+# Release zips
+*.zip
+
+# Editor
+.vscode/
+.history/
+*.log

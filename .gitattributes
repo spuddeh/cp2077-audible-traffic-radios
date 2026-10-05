@@ -1,0 +1,20 @@
+# Text files are stored with LF and checked out with LF on every platform. The game, redscript and
+# RCF read either ending; one ending in the repo keeps every diff about content.
+* text=auto eol=lf
+
+*.reds text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.bbc text eol=lf
+
+*.png binary
+*.jpg binary
+*.xcf binary
+*.zip binary
+*.archive binary
+*.dll binary
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.cmake text eol=lf
