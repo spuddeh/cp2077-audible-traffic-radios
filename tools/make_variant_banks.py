@@ -37,7 +37,9 @@ def cut(body, start, end, insert=b""):
     return bytearray(body[:start]) + insert + bytearray(body[end:])
 
 
-def build(radio_path, xml_path, out_dir):
+def build(radio_path, xml_path, out_dir, metered_bus=None):
+    """metered_bus: route every variant's mixer copy to this bus instead, with an `m_` prefix on every id, so
+    a dev meter on that bus hears the variant alone."""
     radio = read_hirc(radio_path)
     _, event_body = radio[fnv(VANILLA)]
     action_id = struct.unpack_from("<I", event_body, 5)[0]
@@ -133,6 +135,10 @@ def build(radio_path, xml_path, out_dir):
                                                  bytearray(mixer_body), name)
         else:
             sound, action, mixer = change(bytearray(sound_body), bytearray(action_body), bytearray(mixer_body))
+        if metered_bus:
+            mixer = bytearray(mixer)
+            replace_u32(mixer, NPC_BUS, int(metered_bus))
+            name = name.replace("atr_", "atr_m_", 1)
         bank_id = fnv(name + "_bank")
         ns, na, nm = fnv(name + "_sound"), fnv(name + "_action"), fnv(name + "_mixer")
         assert struct.unpack_from("<I", mixer, len(mixer) - 32)[0] == 7, f"{name}: child list moved"
@@ -157,4 +163,4 @@ def build(radio_path, xml_path, out_dir):
 
 
 if __name__ == "__main__":
-    build(*sys.argv[1:4])
+    build(*sys.argv[1:5])

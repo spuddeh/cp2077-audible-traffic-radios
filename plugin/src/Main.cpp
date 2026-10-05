@@ -148,6 +148,7 @@ constexpr uint32_t kRtpcEngageMovingFaster = 139023859;  // veh_engage_moving_fa
 // Dev levels, set from atr_dev.txt: `fast <0..1>` and `gain <0..16>`; a negative value leaves it alone.
 float g_devFast = -1.0f;
 float g_devGain = -1.0f;
+float g_devScale = -1.0f;  // `scale <factor>`: AK::SoundEngine::SetScalingFactor, stretching the distance falloff
 
 // --- receiver swap (experiment) ---
 // TrafficVehicleEmitter::PlayRadio (0x9d8684) hands the emitter its receiver event from the sound set's vehicle
@@ -162,6 +163,7 @@ using AkGameObjectFromPlayingIdFn = uint64_t (*)(uint32_t);
 using AkGetListenersFn = int (*)(uint64_t, uint64_t*, uint32_t*);
 using AkSetRtpcValueFn = int (*)(uint32_t, float, uint64_t, int, int, bool);
 using AkSetOutputBusVolumeFn = int (*)(uint64_t, uint64_t, float);
+using AkSetScalingFactorFn = int (*)(uint64_t, float);
 
 struct Ak
 {
@@ -169,6 +171,7 @@ struct Ak
     AkGetListenersFn listeners = nullptr;
     AkSetRtpcValueFn setRtpc = nullptr;
     AkSetOutputBusVolumeFn setOutputBusVolume = nullptr;
+    AkSetScalingFactorFn setScalingFactor = nullptr;
 };
 Ak g_ak;
 uintptr_t g_rootSlot = 0;
@@ -198,7 +201,8 @@ bool ResolveBoost()
     g_ak.listeners = AtRva<AkGetListenersFn>(0x1ad27c0, {0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C});
     g_ak.setRtpc = AtRva<AkSetRtpcValueFn>(0x1acf570, {0x48, 0x83, 0xEC, 0x48, 0x0F, 0xB6, 0x44, 0x24});
     g_ak.setOutputBusVolume = AtRva<AkSetOutputBusVolumeFn>(0x1ace9c0, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83});
-    return g_rootSlot && g_ak.gameObject && g_ak.listeners && g_ak.setRtpc && g_ak.setOutputBusVolume;
+    g_ak.setScalingFactor = AtRva<AkSetScalingFactorFn>(0x1acf940, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x80, 0x3D});
+    return g_rootSlot && g_ak.setScalingFactor && g_ak.gameObject && g_ak.listeners && g_ak.setRtpc && g_ak.setOutputBusVolume;
 }
 
 template <typename T>
@@ -244,6 +248,10 @@ void Boost(uintptr_t aEmitter)
     if (g_devFast >= 0.0f)
     {
         g_ak.setRtpc(kRtpcEngageMovingFaster, g_devFast, go, 0, kCurveLinear, false);
+    }
+    if (g_devScale > 0.0f)
+    {
+        g_ak.setScalingFactor(go, g_devScale);
     }
     uint64_t listeners[4] = {};
     uint32_t count = 4;
@@ -587,11 +595,11 @@ void DevTick()
                     std::to_string(g_registerMeter(bus, &WorldMeterCallback, kMeterPeakAndRms, nullptr)));
             }
         }
-        else if (verb == "fast" || verb == "gain")
+        else if (verb == "fast" || verb == "gain" || verb == "scale")
         {
             float value = -1.0f;
             words >> value;
-            (verb == "fast" ? g_devFast : g_devGain) = value;
+            (verb == "fast" ? g_devFast : verb == "gain" ? g_devGain : g_devScale) = value;
             Log("dev: " + verb + " " + std::to_string(value));
         }
         else if (verb == "map" && (words >> a >> b) && find)
@@ -636,7 +644,7 @@ bool SafeBoostAll()
                 const auto emitter = Read<uintptr_t>(listeners + l * 8);
                 if (emitter && Read<uint8_t>(emitter + kListenerKind) == kKindTraffic)
                 {
-                    if (g_devFast >= 0.0f || g_devGain >= 0.0f)
+                    if (g_devFast >= 0.0f || g_devGain >= 0.0f || g_devScale > 0.0f)
                     {
                         Boost(emitter);
                     }
