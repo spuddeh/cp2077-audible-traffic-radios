@@ -178,7 +178,7 @@ constexpr float kVanillaVolume = -8.0f;
 // The range a car's radio plays in, in dB on the mixer. The mixer is set to the top; each voice is lowered from
 // there by its own share of the range.
 float g_levelTop = 12.0f;
-float g_levelBottom = 6.0f;
+float g_levelBottom = 0.0f;
 
 using AkSetPropFn = void (*)(void* aObject, int aProp, float aValue, float aMin, float aMax);
 using AkCriticalFn = void (*)(void* aSelf);
@@ -277,8 +277,13 @@ Mixer SetMixerVolume(float aTarget, float aPrevious, float* aFound)
 // -> audio system +0xa8 -> radio manager +0xe0 -> stations), its broadcast event (+0x120) matched by name in its
 // sounds (+0x58, count +0x64; name +0x8, playing id +0x44, state +0x59). Traffic (kind 2) and cars that left
 // traffic (kind 3) both play through the NPC receivers.
+//
+// A car's radio voice restarts often while it is in earshot (slot changes, the 35 m edge), so the level is keyed
+// on the car: a TrafficVehicleEmitter (vtable 0x2b458a0) keeps its car's entity id at +0x138. A kind 3 emitter has
+// no such field and falls back to its playing id.
 constexpr uint32_t kHashEngineRoot = 2549221846;
 constexpr uint32_t kRtpcEngageMovingFaster = 139023859;
+constexpr uintptr_t kRvaTrafficEmitterVtbl = 0x2b458a0;
 constexpr float kCurveBottomDb = -12.0f;
 constexpr int kCurveLinear = 4;
 constexpr uint64_t kNpcReceivers[] = {
@@ -307,7 +312,13 @@ bool IsNpcReceiver(uint64_t aName)
     return false;
 }
 
-bool SafeCollectVoices(uintptr_t aRootSlot, uint32_t* aOut, uint32_t aMax, uint32_t* aCount)
+struct Voice
+{
+    uint32_t playingId;
+    uint64_t key;  // the car's entity id, or the playing id
+};
+
+bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut, uint32_t aMax, uint32_t* aCount)
 {
     *aCount = 0;
     __try
@@ -346,7 +357,9 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uint32_t* aOut, uint32_t aMax, uint3
                         const auto id = Read<uint32_t>(sound + 0x44);
                         if (id && Read<uint8_t>(sound + 0x59) == 3 && *aCount < aMax)
                         {
-                            aOut[(*aCount)++] = id;
+                            const uint64_t car =
+                                Read<uintptr_t>(emitter) == aTrafficVtbl ? Read<uint64_t>(emitter + 0x138) : 0;
+                            aOut[(*aCount)++] = Voice{id, car ? car : id};
                         }
                         break;
                     }
@@ -361,14 +374,21 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uint32_t* aOut, uint32_t aMax, uint3
     }
 }
 
-// The voice's share of the range, from its playing id: the same id always gets the same level.
-float ShareOf(uint32_t aPlayingId)
+// One of three independent hashes of the key, as 0 to 1.
+float Hash01(uint64_t aKey, uint32_t aSeed)
 {
-    uint32_t h = aPlayingId * 2654435761u;
-    h ^= h >> 15;
-    h *= 2246822519u;
-    h ^= h >> 13;
-    return static_cast<float>(h) / 4294967295.0f;
+    uint64_t h = (aKey + aSeed) * 0x9E3779B97F4A7C15ull;
+    h ^= h >> 31;
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 29;
+    return static_cast<float>(h >> 40) / 16777215.0f;
+}
+
+// The car's share of the range: the mean of three hashes, so most cars sit near the middle and few at either
+// end. The same key always gets the same share.
+float ShareOf(uint64_t aKey)
+{
+    return (Hash01(aKey, 1) + Hash01(aKey, 2) + Hash01(aKey, 3)) / 3.0f;
 }
 
 // The curve value that lowers the mixer by aDb (0 or less). The curve's points are amplitude - 1 (-0.7488 is
@@ -397,9 +417,10 @@ void LevelVoices()
         Log("the per-car level is not this game build's - every car plays at the top of the range");
         return;
     }
-    uint32_t voices[256];
+    static const uintptr_t trafficVtbl = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + kRvaTrafficEmitterVtbl;
+    Voice voices[256];
     uint32_t count = 0;
-    if (!SafeCollectVoices(rootSlot, voices, 256, &count))
+    if (!SafeCollectVoices(rootSlot, trafficVtbl, voices, 256, &count))
     {
         stopped = true;
         Log("the station listeners could not be read - every car plays at the top of the range");
@@ -409,12 +430,12 @@ void LevelVoices()
     const float span = std::fmin(0.0f, g_levelBottom - g_levelTop);
     for (uint32_t i = 0; i < count; ++i)
     {
-        auto [it, added] = g_levelled.try_emplace(voices[i], g_round);
+        auto [it, added] = g_levelled.try_emplace(voices[i].playingId, g_round);
         it->second = g_round;
         if (added)
         {
-            setRtpc(kRtpcEngageMovingFaster, CurveValueFor(span * (1.0f - ShareOf(voices[i]))), voices[i], 0,
-                    kCurveLinear, false);
+            setRtpc(kRtpcEngageMovingFaster, CurveValueFor(span * (1.0f - ShareOf(voices[i].key))),
+                    voices[i].playingId, 0, kCurveLinear, false);
         }
     }
     std::erase_if(g_levelled, [](const auto& aEntry) { return aEntry.second != g_round; });
