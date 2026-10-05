@@ -23,6 +23,9 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -329,8 +332,59 @@ int SafeRepointRow(MapFindFn aFind, uint64_t aKey, uint32_t aVanilla, uint32_t a
     }
 }
 
+// The clone bank cites radio.bnk's objects (the mixer's parent, the receive plugins, the effects), so it is
+// loaded once the game is running rather than at audio start-up, where it fails with AK_IDNotFound.
+using LoadBankMemoryCopyFn = int (*)(const void* aData, uint32_t aSize, uint32_t* aBankId);
+constexpr const char* kBankFile = "atr_npc_receivers.bnk";
+
+std::filesystem::path PluginDir()
+{
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&PluginDir), &self);
+    wchar_t path[MAX_PATH] = {};
+    GetModuleFileNameW(self, path, MAX_PATH);
+    return std::filesystem::path(path).parent_path();
+}
+
+bool LoadCloneBank()
+{
+    static const auto load = AtRva<LoadBankMemoryCopyFn>(0x1ac7e00, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74});
+    if (!load)
+    {
+        Log("bank: LoadBankMemoryCopy did not match this build - not loaded");
+        return false;
+    }
+    std::ifstream file(PluginDir() / kBankFile, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (bytes.size() < 8 || std::memcmp(bytes.data(), "BKHD", 4) != 0)
+    {
+        Log(std::string("bank: ") + kBankFile + " is missing or not a soundbank");
+        return false;
+    }
+    std::vector<uint8_t> aligned(bytes.size() + 16);
+    auto* at = aligned.data() + ((16 - (reinterpret_cast<uintptr_t>(aligned.data()) & 15)) & 15);
+    std::memcpy(at, bytes.data(), bytes.size());
+    uint32_t bankId = 0;
+    const int result = load(at, static_cast<uint32_t>(bytes.size()), &bankId);
+    Log("bank: LoadBankMemoryCopy -> " + std::to_string(result) + " (bank " + std::to_string(bankId) + ", " +
+        std::to_string(bytes.size()) + " bytes)");
+    return result == 1 || result == 69;  // AK_Success, AK_BankAlreadyLoaded
+}
+
 void Repoint()
 {
+    static int bankState = 0;  // 0 not tried, 1 loaded, 2 failed
+    if (bankState == 0)
+    {
+        bankState = LoadCloneBank() ? 1 : 2;
+    }
+    if (bankState == 2)
+    {
+        g_repointed = true;
+        Log("repoint: the clone bank did not load - vanilla receivers left as they are");
+        return;
+    }
     static const auto find = AtRva<MapFindFn>(0xb4ec2c, {0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74});
     if (!find)
     {
