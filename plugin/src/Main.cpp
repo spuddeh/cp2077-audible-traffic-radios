@@ -6,9 +6,10 @@
 // Credits: RED4ext by WopsS.
 // ======================================================================================
 //
-// Two changes to the game's own radio, nothing else:
+// Three changes to the game's own radio, nothing else:
 //   1. A station that only traffic cars are tuned to plays. One byte in the station's silent predicate.
-//   2. The NPC car radio mixer (Wwise actor mixer 398448775) plays at kMixerVolume instead of -8 dB, set on the
+//   2. Other radios keep playing while the player's car radio is on. Three bytes in the same predicate.
+//   3. The NPC car radio mixer (Wwise actor mixer 398448775) plays at kMixerVolume instead of -8 dB, set on the
 //      loaded object through Wwise's own property setter. The receivers, their EQ, distance falloff and bus
 //      stay the game's.
 //
@@ -119,7 +120,49 @@ void PatchPredicate()
             : "the patch site does not hold the expected bytes - not this game build, nothing patched");
 }
 
-// --- 2. the NPC car radio mixer's volume ---
+// --- 2. other radios play while the player's car radio is on ---
+// With the player in a car with its radio on, the radio mode is 2, and the same predicate holds silent every
+// station no player receiver is tuned to: traffic, world radios and street music. Its mode 2 branch is a cold
+// block with no hash, reached through the predicate's own jne at +0xab:
+//   +0x00  83 F9 01           cmp ecx, 1
+//   +0x03  0F 85 rel32        jne                      (not mode 2)
+//   +0x09  40 38 BA 1E 02 00 00  cmp [rdx+0x21e], dil  station has a player receiver
+//   +0x10  0F 94 C0           sete al                  1 = silent
+// Replacing the sete with xor al, al plays the station as mode 0 does.
+constexpr size_t kModeJne = 0xab;  // 0F 85 rel32
+constexpr uint8_t kModeCold[] = {0x83, 0xF9, 0x01, 0x0F, 0x85};
+constexpr uint8_t kModeColdCmp[] = {0x40, 0x38, 0xBA, 0x1E, 0x02, 0x00, 0x00, 0x0F, 0x94, 0xC0, 0xE9};
+constexpr size_t kModeColdCmpAt = 0x09;
+constexpr size_t kModeSeteAt = 0x10;
+constexpr uint8_t kModeSete[] = {0x0F, 0x94, 0xC0};
+constexpr uint8_t kModePlays[] = {0x32, 0xC0, 0x90};  // xor al, al; nop
+
+void PatchCarRadioRule()
+{
+    const auto fn = reinterpret_cast<uint8_t*>(ResolveByHash(kHashSilentPredicate));
+    if (!fn || std::memcmp(fn, kPredicatePrologue, sizeof(kPredicatePrologue)) != 0 || fn[kModeJne] != 0x0F ||
+        fn[kModeJne + 1] != 0x85)
+    {
+        Log("the radio station's car radio rule is not this game build's - nothing patched");
+        return;
+    }
+    int32_t rel = 0;
+    std::memcpy(&rel, fn + kModeJne + 2, sizeof(rel));
+    const auto cold = fn + kModeJne + 6 + rel;
+    if (std::memcmp(cold, kModeCold, sizeof(kModeCold)) != 0 ||
+        std::memcmp(cold + kModeColdCmpAt, kModeColdCmp, sizeof(kModeColdCmp)) != 0)
+    {
+        Log(std::memcmp(cold + kModeSeteAt, kModePlays, sizeof(kModePlays)) == 0
+                ? "the car radio rule is already patched - another copy of this plugin is loaded"
+                : "the car radio rule does not hold the expected bytes - not this game build, nothing patched");
+        return;
+    }
+    Log(WriteBytes(cold + kModeSeteAt, kModePlays, sizeof(kModePlays))
+            ? "patched: other radios play while the player's car radio is on"
+            : "the car radio rule could not be made writable - nothing patched");
+}
+
+// --- 3. the NPC car radio mixer's volume ---
 // g_pIndex (0x339f7b8): audio nodes are its first table, buckets at +0x40, count at +0x48; a node sits in bucket
 // id % count, chained through +0x8, id at +0x10. That pointer is 0x10 into the object, whose +0x08 holds the
 // vtable every parameter node shares (0x2ee0798) and whose property bundle is at +0x88 (a count byte, the prop
@@ -271,6 +314,7 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle aHandle,
         g_sdk = aSdk;
         g_handle = aHandle;
         PatchPredicate();
+        PatchCarRadioRule();
         static RED4ext::v1::GameState state{
             .OnEnter = nullptr,
             .OnUpdate = OnUpdate,
