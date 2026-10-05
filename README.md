@@ -1,22 +1,27 @@
 # Audible Traffic Radios
 
-A RED4ext plugin for Cyberpunk 2077 2.31 that lets you hear the radios playing in traffic cars.
+A RED4ext plugin for Cyberpunk 2077 2.31 that lets you hear the radios playing in traffic cars, through the
+game's own car radio sound.
 
 ## What it changes
 
-The game only plays a radio station when something other than a traffic car is tuned to it, such
-as your own radio or a radio in a shop. A traffic car alone never makes its station play, so the
-car's radio stays silent. This plugin lets a traffic car count like any other radio. The game
-still plays at most four stations at once, and a traffic radio still sounds like music from inside
-a closed car.
+Two things in the game's own radio, nothing else:
 
-The function is resolved by RED4ext hash and every byte is verified before any is written; where a
-game update has changed the function, the plugin logs a line and changes nothing.
+- A station that only traffic cars are tuned to plays. Without this, a traffic car's radio is tuned but its
+  station never plays, so the car stays silent.
+- The NPC car radio mixer plays 26 dB louder (-8 dB to +18 dB), set on the loaded sound data in memory. No
+  sound bank is shipped or replaced.
+
+What you hear is the game's own car radio sound: each car class's own filtering, so it sounds like music from
+inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m.
+
+Every address is verified before it is used, and the mixer value is only changed when it still holds the game's
+own -8 dB. On any other game build the plugin logs a line and changes nothing.
 
 ## Install
 
-Copy `red4ext\plugins\AudibleTrafficRadios\` into the game folder, or install the archive with a
-mod manager. Requires [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380).
+Copy `red4ext\plugins\AudibleTrafficRadios\` into the game folder, or install the archive with a mod manager.
+Requires [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380).
 
 ## Build
 
