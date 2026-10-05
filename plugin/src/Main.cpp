@@ -20,7 +20,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
@@ -129,7 +128,7 @@ void PatchPredicate()
 constexpr uint32_t kNpcRadioMixer = 398448775;
 constexpr uint8_t kPropVolume = 0;
 constexpr float kVanillaVolume = -8.0f;
-constexpr float kMixerVolume = 42.0f;
+constexpr float kMixerVolume = 18.0f;
 
 using AkSetPropFn = void (*)(void* aObject, int aProp, float aValue, float aMin, float aMax);
 using AkCriticalFn = void (*)(void* aSelf);
@@ -191,7 +190,7 @@ enum class Mixer
 };
 
 // Sets the mixer's volume when it holds the vanilla value; reports what it found.
-Mixer SetMixerVolume(float* aFound, uintptr_t* aObject)
+Mixer SetMixerVolume(float* aFound)
 {
     static const auto setProp = AtRva<AkSetPropFn>(0x1b07990, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83});
     static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
@@ -199,13 +198,11 @@ Mixer SetMixerVolume(float* aFound, uintptr_t* aObject)
     if (!setProp || !lockOn || !lockOff)
     {
         *aFound = std::numeric_limits<float>::quiet_NaN();
-        *aObject = 0;
         return Mixer::Unexpected;
     }
     alignas(16) uint8_t critical[16] = {};
     lockOn(critical);
     const uintptr_t object = SafeFindObject(kNpcRadioMixer);
-    *aObject = object;
     const float before = object ? SafeProp(object, kPropVolume) : std::numeric_limits<float>::quiet_NaN();
     Mixer result = Mixer::NotLoaded;
     if (object && std::fabs(before - kVanillaVolume) < 0.001f)
@@ -222,43 +219,32 @@ Mixer SetMixerVolume(float* aFound, uintptr_t* aObject)
     return result;
 }
 
-// Once a second until the mixer is set, then every ten seconds, so a reloaded radio bank is set again.
+// Once a second until the radio bank is loaded and the mixer set. The bank stays loaded for the session, save
+// loads and the main menu included, so one write holds.
 bool OnUpdate(RED4ext::CGameApplication*)
 {
+    static bool done = false;
     static uint64_t next = 0;
-    static Mixer last = Mixer::NotLoaded;
-    static uintptr_t lastObject = 0;
     const uint64_t now = GetTickCount64();
-    if (now < next || last == Mixer::Unexpected)
+    if (done || now < next)
     {
         return false;
     }
+    next = now + 1000;
     float found = 0.0f;
-    uintptr_t object = 0;
-    const Mixer result = SetMixerVolume(&found, &object);
-    // Which mixer object the bank gave: a new address means the radio bank was loaded again.
-    if (object != lastObject)
+    switch (SetMixerVolume(&found))
     {
-        char buf[96];
-        std::snprintf(buf, sizeof(buf), "the NPC car radio mixer object is at %llx (was %llx)",
-                      static_cast<unsigned long long>(object), static_cast<unsigned long long>(lastObject));
-        Log(buf);
-        lastObject = object;
+    case Mixer::Set:
+        Log("the NPC car radio mixer plays at " + std::to_string(found) + " dB");
+        done = true;
+        break;
+    case Mixer::Unexpected:
+        Log("the NPC car radio mixer holds " + std::to_string(found) + " dB, not the game's -8 - left as it is");
+        done = true;
+        break;
+    case Mixer::NotLoaded:
+        break;
     }
-    if (result != last || (result == Mixer::Set && std::fabs(found - kMixerVolume) >= 0.001f))
-    {
-        if (result == Mixer::Set)
-        {
-            Log("the NPC car radio mixer plays at " + std::to_string(found) + " dB");
-        }
-        else if (result == Mixer::Unexpected)
-        {
-            Log("the NPC car radio mixer holds " + std::to_string(found) +
-                " dB, not the game's -8 - left as it is");
-        }
-    }
-    last = result;
-    next = now + (result == Mixer::Set ? 10000 : 1000);
     return false;
 }
 } // namespace
