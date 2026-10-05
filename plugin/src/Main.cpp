@@ -639,6 +639,71 @@ bool SetNodeProp(uint32_t aId, uint8_t aProp, float aValue)
     return true;
 }
 
+// Dev: the node's first 0x100 bytes, its prop bundle, and every 4-byte slot holding aFloat, in the node or one
+// pointer away from it.
+bool SafeDumpNode(uintptr_t aNode, float aFloat, std::string* aOut)
+{
+    __try
+    {
+        char buf[64];
+        for (int off = 0; off < 0x100; off += 8)
+        {
+            std::snprintf(buf, sizeof(buf), "%s+%02x=%016llx", off % 0x40 == 0 ? "\n  " : " ", off,
+                          static_cast<unsigned long long>(Read<uint64_t>(aNode + off)));
+            *aOut += buf;
+        }
+        const auto bundle = Read<uintptr_t>(aNode + 0x88);
+        if (bundle)
+        {
+            *aOut += "\n  bundle:";
+            for (int i = 0; i < 32; ++i)
+            {
+                std::snprintf(buf, sizeof(buf), " %02x", Read<uint8_t>(bundle + i));
+                *aOut += buf;
+            }
+        }
+        uint32_t want = 0;
+        std::memcpy(&want, &aFloat, 4);
+        *aOut += "\n  hits:";
+        for (int off = 0; off < 0x200; off += 4)
+        {
+            if (Read<uint32_t>(aNode + off) == want)
+            {
+                std::snprintf(buf, sizeof(buf), " node+%x", off);
+                *aOut += buf;
+            }
+        }
+        for (int off = 0; off < 0x200; off += 8)
+        {
+            const auto ptr = Read<uintptr_t>(aNode + off);
+            if (ptr < 0x10000 || ptr > 0x7ffffffeffff || (ptr & 3))
+            {
+                continue;
+            }
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (!VirtualQuery(reinterpret_cast<void*>(ptr), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+                (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            {
+                continue;
+            }
+            const auto end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+            for (uintptr_t q = ptr; q + 4 <= end && q < ptr + 0x80; q += 4)
+            {
+                if (Read<uint32_t>(q) == want)
+                {
+                    std::snprintf(buf, sizeof(buf), " [node+%x]+%llx", off, static_cast<unsigned long long>(q - ptr));
+                    *aOut += buf;
+                }
+            }
+        }
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 // --- dev harness ---
 // While atr_dev.txt sits beside the plugin, it is re-read every second and applied when it changes:
 //   bank <absolute path>       load a test bank once
@@ -691,6 +756,21 @@ void DevTick()
                 g_worldMeter.bus = bus;
                 Log("dev: meter on bus " + std::to_string(bus) + " -> " +
                     std::to_string(g_registerMeter(bus, &WorldMeterCallback, kMeterPeakAndRms, nullptr)));
+            }
+        }
+        else if (verb == "nodedump")
+        {
+            uint32_t id = 0;
+            float value = 0.0f;
+            if (words >> id >> value)
+            {
+                const uintptr_t node = SafeFindNode(id);
+                std::string out = "node: dump " + std::to_string(id) + " at " + std::to_string(node);
+                if (node && !SafeDumpNode(node, value, &out))
+                {
+                    out += " (faulted)";
+                }
+                Log(out);
             }
         }
         else if (verb == "nodeprop")
