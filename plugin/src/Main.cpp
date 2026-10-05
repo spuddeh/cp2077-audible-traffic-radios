@@ -26,6 +26,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <sstream>
+#include <unordered_map>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -286,6 +288,7 @@ constexpr RepointRow kRepoint[] = {
     {"radio_car_sports_npc", "atr_v2_world_attenuation"},
 };
 bool g_repointed = false;
+std::unordered_map<std::string, uint32_t> g_devWritten;  // vanilla event -> id last written to its row
 
 uint32_t Fnv1(const char* aName)
 {
@@ -298,8 +301,9 @@ uint32_t Fnv1(const char* aName)
     return h;
 }
 
-// 0 missing map, 1 row not found, 2 row holds another id, 3 written, 4 already the clone
-int SafeRepointRow(MapFindFn aFind, uint64_t aKey, uint32_t aVanilla, uint32_t aClone)
+// 0 missing map, 1 row not found, 2 row holds another id, 3 written, 4 already the clone. A row is written
+// only while it holds the vanilla id or aPrevious, the id this plugin last wrote to it.
+int SafeRepointRow(MapFindFn aFind, uint64_t aKey, uint32_t aVanilla, uint32_t aClone, uint32_t aPrevious = 0)
 {
     __try
     {
@@ -319,7 +323,7 @@ int SafeRepointRow(MapFindFn aFind, uint64_t aKey, uint32_t aVanilla, uint32_t a
         {
             return 4;
         }
-        if (*id != aVanilla)
+        if (*id != aVanilla && (!aPrevious || *id != aPrevious))
         {
             return 2;
         }
@@ -347,7 +351,7 @@ std::filesystem::path PluginDir()
     return std::filesystem::path(path).parent_path();
 }
 
-bool LoadCloneBank()
+bool LoadBankFile(const std::filesystem::path& aPath)
 {
     static const auto load = AtRva<LoadBankMemoryCopyFn>(0x1ac7e00, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74});
     if (!load)
@@ -355,11 +359,11 @@ bool LoadCloneBank()
         Log("bank: LoadBankMemoryCopy did not match this build - not loaded");
         return false;
     }
-    std::ifstream file(PluginDir() / kBankFile, std::ios::binary);
+    std::ifstream file(aPath, std::ios::binary);
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     if (bytes.size() < 8 || std::memcmp(bytes.data(), "BKHD", 4) != 0)
     {
-        Log(std::string("bank: ") + kBankFile + " is missing or not a soundbank");
+        Log("bank: " + aPath.filename().string() + " is missing or not a soundbank");
         return false;
     }
     std::vector<uint8_t> aligned(bytes.size() + 16);
@@ -367,7 +371,8 @@ bool LoadCloneBank()
     std::memcpy(at, bytes.data(), bytes.size());
     uint32_t bankId = 0;
     const int result = load(at, static_cast<uint32_t>(bytes.size()), &bankId);
-    Log("bank: LoadBankMemoryCopy -> " + std::to_string(result) + " (bank " + std::to_string(bankId) + ", " +
+    Log("bank: " + aPath.filename().string() + " LoadBankMemoryCopy -> " + std::to_string(result) + " (bank " +
+        std::to_string(bankId) + ", " +
         std::to_string(bytes.size()) + " bytes)");
     return result == 1 || result == 69;  // AK_Success, AK_BankAlreadyLoaded
 }
@@ -377,7 +382,7 @@ void Repoint()
     static int bankState = 0;  // 0 not tried, 1 loaded, 2 failed
     if (bankState == 0)
     {
-        bankState = LoadCloneBank() ? 1 : 2;
+        bankState = LoadBankFile(PluginDir() / kBankFile) ? 1 : 2;
     }
     if (bankState == 2)
     {
@@ -400,12 +405,78 @@ void Repoint()
     {
         const int r = SafeRepointRow(find, RED4ext::CName(row.vanilla).hash, Fnv1(row.vanilla), Fnv1(row.clone));
         pending |= r == 0;
+        if (r == 3 || r == 4)
+        {
+            g_devWritten[row.vanilla] = Fnv1(row.clone);
+        }
         line += std::string(" ") + row.vanilla + " -> " + row.clone + " " + kResult[r] + ";";
     }
     if (!pending)
     {
         g_repointed = true;
         Log(line);
+    }
+}
+
+// --- dev harness ---
+// While atr_dev.txt sits beside the plugin, it is re-read every second and applied when it changes:
+//   bank <absolute path>       load a test bank once
+//   map <vanilla event> <event> point the vanilla receiver's metadata row at <event> (its own name restores it)
+// Dev only: the file is never shipped.
+std::string g_devText;
+std::unordered_set<std::string> g_devBanks;
+
+void DevTick()
+{
+    std::ifstream file(PluginDir() / "atr_dev.txt");
+    if (!file)
+    {
+        return;
+    }
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (text == g_devText)
+    {
+        return;
+    }
+    static const auto find = AtRva<MapFindFn>(0xb4ec2c, {0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74});
+    static const char* kResult[] = {"metadata not loaded yet", "no such row", "row holds an unexpected id",
+                                    "repointed", "already there"};
+    std::istringstream lines(text);
+    std::string line;
+    bool pending = false;
+    while (std::getline(lines, line))
+    {
+        std::istringstream words(line);
+        std::string verb, a, b;
+        words >> verb;
+        if (verb == "bank")
+        {
+            std::getline(words >> std::ws, a);
+            while (!a.empty() && (a.back() == '\r' || a.back() == ' '))
+            {
+                a.pop_back();
+            }
+            if (!a.empty() && g_devBanks.insert(a).second)
+            {
+                LoadBankFile(a);
+            }
+        }
+        else if (verb == "map" && (words >> a >> b) && find)
+        {
+            const uint32_t target = Fnv1(b.c_str());
+            const auto previous = g_devWritten.count(a) ? g_devWritten[a] : 0u;
+            const int r = SafeRepointRow(find, RED4ext::CName(a.c_str()).hash, Fnv1(a.c_str()), target, previous);
+            pending |= r == 0;
+            if (r == 3 || r == 4)
+            {
+                g_devWritten[a] = target;
+            }
+            Log("dev: " + a + " -> " + b + " " + kResult[r]);
+        }
+    }
+    if (!pending)
+    {
+        g_devText = text;
     }
 }
 
@@ -464,6 +535,12 @@ bool OnUpdate(RED4ext::CGameApplication*)
     if (!g_repointed)
     {
         Repoint();
+    }
+    static uint64_t lastDev = 0;
+    if (now - lastDev >= 1000)
+    {
+        lastDev = now;
+        DevTick();
     }
     static uint64_t lastReport = 0;
     if (now - lastReport >= 10000 && g_boosted != before)
