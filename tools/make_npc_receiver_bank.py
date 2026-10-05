@@ -119,7 +119,8 @@ def build(radio_path):
         struct.pack_into("<I", event, 0, new_event)
         struct.pack_into("<I", event, 5, new_action)
 
-        hirc += object_bytes(HIRC_ACTOR_MIXER, mixer) + object_bytes(HIRC_SOUND, sound)
+        # A mixer resolves its child list as it loads, so the sound precedes it: mixer first is AK_IDNotFound.
+        hirc += object_bytes(HIRC_SOUND, sound) + object_bytes(HIRC_ACTOR_MIXER, mixer)
         hirc += object_bytes(HIRC_ACTION, action) + object_bytes(HIRC_EVENT, event)
         count += 4
         ids.append((vanilla, fnv(vanilla), clone, new_event))
