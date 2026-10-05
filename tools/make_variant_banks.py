@@ -71,6 +71,54 @@ def build(radio_path, xml_path, out_dir):
         assert replace_u32(mixer, NPC_ATTENUATION, WORLD_ATTENUATION) == 1
         return sound, action, mixer
 
+    # The lowend sound's one insert, a Parametric EQ. Its body: ulID, fxID, uSize, then three bands of
+    # eFilterType u32, fGain, fFrequency, fQFactor f32, bOnOff u8 (17 bytes each) from offset 12.
+    eq_id = 828314749
+    _, eq_body = radio[eq_id]
+    band = lambda i: 12 + 17 * i
+
+    def eq_copy(edit):
+        def change(sound, action, mixer, name):
+            eq = bytearray(eq_body)
+            edit(eq)
+            new_eq = fnv(name + "_eq")
+            struct.pack_into("<I", eq, 0, new_eq)
+            assert replace_u32(sound, eq_id, new_eq) == 1, f"{name}: sound cites its EQ other than once"
+            return sound, action, mixer, [(17, eq)]
+        return change
+
+    def peaking(eq):
+        assert struct.unpack_from("<I", eq, band(1))[0] == 3, "band 2 is no longer a notch"
+        struct.pack_into("<I", eq, band(1), 6)
+
+    def band_off(i):
+        def edit(eq):
+            eq[band(i) + 16] = 0
+        return edit
+
+    def shelf(freq=None, gain=None, q=None):
+        def edit(eq):
+            assert struct.unpack_from("<I", eq, band(2))[0] == 5, "band 3 is no longer a high shelf"
+            if gain is not None:
+                struct.pack_into("<f", eq, band(2) + 4, gain)
+            if freq is not None:
+                struct.pack_into("<f", eq, band(2) + 8, freq)
+            if q is not None:
+                struct.pack_into("<f", eq, band(2) + 12, q)
+        return edit
+
+    sweep = {f"atr_s{int(f)}": eq_copy(shelf(freq=f)) for f in (200.0, 500.0, 1000.0, 3000.0, 6000.0, 12000.0)}
+    sweep["atr_s1500_q0707"] = eq_copy(shelf(q=0.707))
+    sweep["atr_s1500_g12"] = eq_copy(shelf(gain=-12.0))
+
+    eq_variants = {
+        **sweep,
+        "atr_v8_eq_copy": eq_copy(lambda eq: None),
+        "atr_v9_eq_peaking": eq_copy(peaking),
+        "atr_v10_eq_band2_off": eq_copy(band_off(1)),
+        "atr_v11_eq_band3_off": eq_copy(band_off(2)),
+    }
+
     variants = {
         "atr_v3_no_eq": no_eq,
         "atr_v4_no_fade": no_fade,
@@ -78,8 +126,13 @@ def build(radio_path, xml_path, out_dir):
         "atr_v6_world_bus": world_bus,
         "atr_v7_world_attenuation": world_attenuation,
     }
-    for name, change in variants.items():
-        sound, action, mixer = change(bytearray(sound_body), bytearray(action_body), bytearray(mixer_body))
+    for name, change in list(variants.items()) + list(eq_variants.items()):
+        extra = []
+        if name in eq_variants:
+            sound, action, mixer, extra = change(bytearray(sound_body), bytearray(action_body),
+                                                 bytearray(mixer_body), name)
+        else:
+            sound, action, mixer = change(bytearray(sound_body), bytearray(action_body), bytearray(mixer_body))
         bank_id = fnv(name + "_bank")
         ns, na, nm = fnv(name + "_sound"), fnv(name + "_action"), fnv(name + "_mixer")
         assert struct.unpack_from("<I", mixer, len(mixer) - 32)[0] == 7, f"{name}: child list moved"
@@ -93,7 +146,7 @@ def build(radio_path, xml_path, out_dir):
         event = bytearray(event_body)
         struct.pack_into("<I", event, 0, fnv(name))
         struct.pack_into("<I", event, 5, na)
-        objects = [(HIRC_SOUND, sound), (HIRC_ACTOR_MIXER, mixer), (HIRC_ACTION, action), (HIRC_EVENT, event)]
+        objects = extra + [(HIRC_SOUND, sound), (HIRC_ACTOR_MIXER, mixer), (HIRC_ACTION, action), (HIRC_EVENT, event)]
         hirc = struct.pack("<I", len(objects)) + b"".join(object_bytes(t, b) for t, b in objects)
         bkhd = struct.pack("<IIIIII", BANK_VERSION, bank_id, LANGUAGE_ID, 16, 476, 0)
         bkhd += struct.pack("<IIII", bank_id, 1, 0, 0)

@@ -142,8 +142,9 @@ constexpr size_t kSoundPlayingId = 0x44;
 constexpr size_t kSoundState = 0x59;
 
 constexpr uint32_t kRtpcEngageMovingFaster = 139023859;  // veh_engage_moving_faster
-constexpr float kOutputGain = 16.0f;                     // Wwise's ceiling, +24 dB
-constexpr bool kBoost = false;
+// Dev levels, set from atr_dev.txt: `fast <0..1>` and `gain <0..16>`; a negative value leaves it alone.
+float g_devFast = -1.0f;
+float g_devGain = -1.0f;
 
 // --- receiver swap (experiment) ---
 // TrafficVehicleEmitter::PlayRadio (0x9d8684) hands the emitter its receiver event from the sound set's vehicle
@@ -237,13 +238,19 @@ void Boost(uintptr_t aEmitter)
     {
         return;
     }
-    g_ak.setRtpc(kRtpcEngageMovingFaster, 1.0f, go, 0, kCurveLinear, false);
+    if (g_devFast >= 0.0f)
+    {
+        g_ak.setRtpc(kRtpcEngageMovingFaster, g_devFast, go, 0, kCurveLinear, false);
+    }
     uint64_t listeners[4] = {};
     uint32_t count = 4;
     g_ak.listeners(go, listeners, &count);
     for (uint32_t i = 0; i < count && i < 4; ++i)
     {
-        g_ak.setOutputBusVolume(go, listeners[i], kOutputGain);
+        if (g_devGain >= 0.0f)
+        {
+            g_ak.setOutputBusVolume(go, listeners[i], g_devGain);
+        }
     }
     ++g_boosted;
 }
@@ -461,6 +468,13 @@ void DevTick()
                 LoadBankFile(a);
             }
         }
+        else if (verb == "fast" || verb == "gain")
+        {
+            float value = -1.0f;
+            words >> value;
+            (verb == "fast" ? g_devFast : g_devGain) = value;
+            Log("dev: " + verb + " " + std::to_string(value));
+        }
         else if (verb == "map" && (words >> a >> b) && find)
         {
             const uint32_t target = Fnv1(b.c_str());
@@ -503,7 +517,7 @@ bool SafeBoostAll()
                 const auto emitter = Read<uintptr_t>(listeners + l * 8);
                 if (emitter && Read<uint8_t>(emitter + kListenerKind) == kKindTraffic)
                 {
-                    if (kBoost)
+                    if (g_devFast >= 0.0f || g_devGain >= 0.0f)
                     {
                         Boost(emitter);
                     }
@@ -582,7 +596,7 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle aHandle,
                 .OnExit = nullptr,
             };
             aSdk->gameStates->Add(aHandle, RED4ext::EGameStateType::Running, &state);
-            Log(std::string("repoint: traffic receivers will play the cloned NPC chains") + (kBoost ? ", boost on" : ", boost off"));
+            Log(std::string("repoint: traffic receivers will play the cloned NPC chains") + std::string());
         }
         else
         {
