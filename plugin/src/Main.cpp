@@ -24,6 +24,8 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 namespace
 {
@@ -136,6 +138,15 @@ constexpr size_t kSoundState = 0x59;
 
 constexpr uint32_t kRtpcEngageMovingFaster = 139023859;  // veh_engage_moving_faster
 constexpr float kOutputGain = 16.0f;                     // Wwise's ceiling, +24 dB
+constexpr bool kBoost = false;
+
+// --- receiver swap (experiment) ---
+// TrafficVehicleEmitter::PlayRadio (0x9d8684) hands the emitter its receiver event from the sound set's vehicle
+// audio data (+0x140 -> +0x80) each time a car's radio starts. Rewriting that name in every sound set seen makes
+// later cars of that set receive through kSwapReceiver instead of their radio_car_*_npc event.
+constexpr uintptr_t kRvaTrafficEmitterVtbl = 0x2b458a0;
+constexpr const char* kSwapReceiver = "radio_default_int";  // the world radio receiver, heard in game
+std::unordered_set<uintptr_t> g_swappedSets;
 constexpr int kCurveLinear = 4;                          // AkCurveInterpolation_Linear
 
 using AkGameObjectFromPlayingIdFn = uint64_t (*)(uint32_t);
@@ -154,6 +165,7 @@ Ak g_ak;
 uintptr_t g_rootSlot = 0;
 uint64_t g_lastBoost = 0;
 uint64_t g_boosted = 0;
+std::vector<uint64_t> g_swapLog;  // receiver names replaced this pass, logged outside the SEH block
 
 template <typename T>
 T AtRva(uintptr_t aRva, std::initializer_list<uint8_t> aPrologue)
@@ -231,6 +243,23 @@ void Boost(uintptr_t aEmitter)
     ++g_boosted;
 }
 
+// Only a TrafficVehicleEmitter has vehicle audio data at +0x140: the vtable is checked before the read, because
+// the game's own handler ends the process on a bad read before SEH runs.
+uintptr_t SwapTarget(uintptr_t aEmitter, uint64_t aSwap)
+{
+    static const uintptr_t trafficVtbl = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + kRvaTrafficEmitterVtbl;
+    if (Read<uintptr_t>(aEmitter) != trafficVtbl)
+    {
+        return 0;
+    }
+    const auto metadata = Read<uintptr_t>(aEmitter + kEmitterMetadata);
+    if (!metadata || Read<uint64_t>(metadata + kMetadataReceiverEvent) == aSwap)
+    {
+        return 0;
+    }
+    return metadata;
+}
+
 bool SafeBoostAll()
 {
     __try
@@ -254,7 +283,17 @@ bool SafeBoostAll()
                 const auto emitter = Read<uintptr_t>(listeners + l * 8);
                 if (emitter && Read<uint8_t>(emitter + kListenerKind) == kKindTraffic)
                 {
-                    Boost(emitter);
+                    static const uint64_t swap = RED4ext::CName(kSwapReceiver).hash;
+                    if (const auto metadata = SwapTarget(emitter, swap))
+                    {
+                        g_swapLog.push_back(Read<uint64_t>(metadata + kMetadataReceiverEvent));
+                        *reinterpret_cast<uint64_t*>(metadata + kMetadataReceiverEvent) = swap;
+                        g_swappedSets.insert(metadata);
+                    }
+                    if (kBoost)
+                    {
+                        Boost(emitter);
+                    }
                 }
             }
         }
@@ -275,9 +314,16 @@ bool OnUpdate(RED4ext::CGameApplication*)
     }
     g_lastBoost = now;
     const uint64_t before = g_boosted;
+    g_swapLog.clear();
     if (!SafeBoostAll())
     {
         Log("boost: the station walk faulted - skipped this pass");
+    }
+    for (const auto old : g_swapLog)
+    {
+        const char* text = RED4ext::CName(old).ToString();
+        Log(std::string("swap: a traffic sound set now receives through ") + kSwapReceiver + " instead of " +
+            (text && *text ? text : "?") + " (" + std::to_string(g_swappedSets.size()) + " sets)");
     }
     static uint64_t lastReport = 0;
     if (now - lastReport >= 10000 && g_boosted != before)
@@ -319,7 +365,7 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle aHandle,
                 .OnExit = nullptr,
             };
             aSdk->gameStates->Add(aHandle, RED4ext::EGameStateType::Running, &state);
-            Log("boost: traffic receivers get veh_engage_moving_faster 1 and x16 output");
+            Log(std::string("swap: traffic receivers move to ") + kSwapReceiver + (kBoost ? ", boost on" : ", boost off"));
         }
         else
         {
