@@ -6,6 +6,7 @@
   and does nothing.
 
 ## Planned
-- Keep traffic radios quiet during combat and police music, as vanilla mode 1 intends.
+- Decide after testing: silence traffic radios during combat only if combat music and car radios
+  clash. Vanilla's mode 1 meter reads heard outside combat too, so it cannot be reused for this.
 - Raise the NPC receiver level if traffic radios are still too quiet (`veh_engage_moving_faster`).
 - An open-air sound for convertibles in traffic.
