@@ -23,6 +23,9 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -425,6 +428,90 @@ void Repoint()
     }
 }
 
+// --- dev meter ---
+// AK::SoundEngine::RegisterBusMeteringCallback (0x1acb900) on the NPC vehicle radio bus and the world radio bus.
+// The callback runs on the audio thread with AkBusMeteringCallbackInfo: metering at +0x10 (per-channel linear
+// arrays at [m+0] and [m+0x10]), channel count in the low byte of +0x18, as MixBusMeter::OnMeteringCallback
+// reads it. The engine registers no callback on the NPC bus, so this one takes nothing from it.
+using RegisterMeterFn = int (*)(uint32_t aBus, void (*aCallback)(void*), uint32_t aFlags, void* aCookie);
+constexpr uint32_t kNpcRadioBus = 194813043;
+constexpr uint32_t kWorldRadioBus = 918052088;
+constexpr uint32_t kMeterPeakAndRms = 1 | 4;
+struct MeterReading
+{
+    std::atomic<float> a{0.0f};
+    std::atomic<float> b{0.0f};
+    std::atomic<float> maxA{0.0f};
+};
+MeterReading g_npcMeter;
+MeterReading g_worldMeter;
+
+void ReadMeter(void* aInfo, MeterReading& aOut)
+{
+    const auto info = reinterpret_cast<uintptr_t>(aInfo);
+    const auto metering = *reinterpret_cast<uintptr_t*>(info + 0x10);
+    const auto channels = *reinterpret_cast<uint8_t*>(info + 0x18);
+    if (!metering || !channels)
+    {
+        return;
+    }
+    const auto* a = *reinterpret_cast<float**>(metering);
+    const auto* b = *reinterpret_cast<float**>(metering + 0x10);
+    float sa = 0.0f, sb = 0.0f;
+    for (uint8_t i = 0; i < channels; ++i)
+    {
+        sa = std::max(sa, a ? a[i] : 0.0f);
+        sb = std::max(sb, b ? b[i] : 0.0f);
+    }
+    aOut.a.store(sa);
+    aOut.b.store(sb);
+    if (sa > aOut.maxA.load())
+    {
+        aOut.maxA.store(sa);
+    }
+}
+
+void NpcMeterCallback(void* aInfo)
+{
+    ReadMeter(aInfo, g_npcMeter);
+}
+
+void WorldMeterCallback(void* aInfo)
+{
+    ReadMeter(aInfo, g_worldMeter);
+}
+
+std::string Db(float aLinear)
+{
+    char buf[16];
+    if (aLinear <= 0.000001f)
+    {
+        return "-inf";
+    }
+    std::snprintf(buf, sizeof(buf), "%.1f", 20.0f * std::log10(aLinear));
+    return buf;
+}
+
+void MeterTick()
+{
+    static bool registered = false;
+    if (!registered)
+    {
+        registered = true;
+        const auto reg = AtRva<RegisterMeterFn>(0x1acb900, {0x48, 0x83, 0xEC, 0x38, 0x80, 0x3D, 0x49, 0x3E});
+        if (!reg)
+        {
+            Log("meter: RegisterBusMeteringCallback did not match this build");
+            return;
+        }
+        Log("meter: npc bus " + std::to_string(reg(kNpcRadioBus, &NpcMeterCallback, kMeterPeakAndRms, nullptr)) +
+            ", world bus " + std::to_string(reg(kWorldRadioBus, &WorldMeterCallback, kMeterPeakAndRms, nullptr)));
+    }
+    Log("meter: npc " + Db(g_npcMeter.a.load()) + "/" + Db(g_npcMeter.b.load()) + " dB (max " +
+        Db(g_npcMeter.maxA.exchange(0.0f)) + ")  world " + Db(g_worldMeter.a.load()) + "/" +
+        Db(g_worldMeter.b.load()) + " dB (max " + Db(g_worldMeter.maxA.exchange(0.0f)) + ")");
+}
+
 // --- dev harness ---
 // While atr_dev.txt sits beside the plugin, it is re-read every second and applied when it changes:
 //   bank <absolute path>       load a test bank once
@@ -555,6 +642,7 @@ bool OnUpdate(RED4ext::CGameApplication*)
     {
         lastDev = now;
         DevTick();
+        MeterTick();
     }
     static uint64_t lastReport = 0;
     if (now - lastReport >= 10000 && g_boosted != before)
