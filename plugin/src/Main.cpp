@@ -9,9 +9,9 @@
 // Three changes to the game's own radio, nothing else:
 //   1. A station that only traffic cars are tuned to plays. One byte in the station's silent predicate.
 //   2. Other radios keep playing while the player's car radio is on. Three bytes in the same predicate.
-//   3. The NPC car radio mixer (Wwise actor mixer 398448775) plays at kMixerVolume instead of -8 dB, set on the
-//      loaded object through Wwise's own property setter. The receivers, their EQ, distance falloff and bus
-//      stay the game's.
+//   3. The NPC car radio mixer (Wwise actor mixer 398448775) plays at the top of a level range instead of -8 dB,
+//      set on the loaded object through Wwise's own property setter, and each car's radio sits somewhere in that
+//      range. The receivers, their EQ, distance falloff and bus stay the game's.
 //
 // **Every address is verified before it is used, and a value is written only over the one expected.** On any
 // other game build the plugin logs a line and changes nothing.
@@ -21,10 +21,13 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace
 {
@@ -171,7 +174,11 @@ void PatchCarRadioRule()
 constexpr uint32_t kNpcRadioMixer = 398448775;
 constexpr uint8_t kPropVolume = 0;
 constexpr float kVanillaVolume = -8.0f;
-constexpr float kMixerVolume = 18.0f;
+
+// The range a car's radio plays in, in dB on the mixer. The mixer is set to the top; each voice is lowered from
+// there by its own share of the range.
+float g_levelTop = 12.0f;
+float g_levelBottom = 6.0f;
 
 using AkSetPropFn = void (*)(void* aObject, int aProp, float aValue, float aMin, float aMax);
 using AkCriticalFn = void (*)(void* aSelf);
@@ -232,8 +239,8 @@ enum class Mixer
     Unexpected,
 };
 
-// Sets the mixer's volume when it holds the vanilla value; reports what it found.
-Mixer SetMixerVolume(float* aFound)
+// Sets the mixer's volume to aTarget when it holds the vanilla value or aPrevious; reports what it found.
+Mixer SetMixerVolume(float aTarget, float aPrevious, float* aFound)
 {
     static const auto setProp = AtRva<AkSetPropFn>(0x1b07990, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83});
     static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
@@ -248,46 +255,250 @@ Mixer SetMixerVolume(float* aFound)
     const uintptr_t object = SafeFindObject(kNpcRadioMixer);
     const float before = object ? SafeProp(object, kPropVolume) : std::numeric_limits<float>::quiet_NaN();
     Mixer result = Mixer::NotLoaded;
-    if (object && std::fabs(before - kVanillaVolume) < 0.001f)
+    if (object && (std::fabs(before - kVanillaVolume) < 0.001f || std::fabs(before - aPrevious) < 0.001f))
     {
-        setProp(reinterpret_cast<void*>(object), kPropVolume, kMixerVolume, 0.0f, 0.0f);
+        setProp(reinterpret_cast<void*>(object), kPropVolume, aTarget, 0.0f, 0.0f);
         result = Mixer::Set;
     }
     else if (object)
     {
-        result = std::fabs(before - kMixerVolume) < 0.001f ? Mixer::Set : Mixer::Unexpected;
+        result = std::fabs(before - aTarget) < 0.001f ? Mixer::Set : Mixer::Unexpected;
     }
     *aFound = object ? SafeProp(object, kPropVolume) : before;
     lockOff(critical);
     return result;
 }
 
-// Once a second until the radio bank is loaded and the mixer set. The bank stays loaded for the session, save
-// loads and the main menu included, so one write holds.
-bool OnUpdate(RED4ext::CGameApplication*)
+// --- 4. a level per car ---
+// Each NPC car radio voice gets its own value of veh_engage_moving_faster (139023859), the mixer's vanilla level
+// control: -12 dB at 0 to 0 dB at 1, an S-curve, added to the mixer. It is set per playing id through
+// AK::SoundEngine::SetRTPCValueByPlayingID (0x1acf6a0), so the car's engine sounds on the same game object keep
+// theirs. A voice is found the way the station update finds it: every listener of every station (engine root
+// -> audio system +0xa8 -> radio manager +0xe0 -> stations), its broadcast event (+0x120) matched by name in its
+// sounds (+0x58, count +0x64; name +0x8, playing id +0x44, state +0x59). Traffic (kind 2) and cars that left
+// traffic (kind 3) both play through the NPC receivers.
+constexpr uint32_t kHashEngineRoot = 2549221846;
+constexpr uint32_t kRtpcEngageMovingFaster = 139023859;
+constexpr float kCurveBottomDb = -12.0f;
+constexpr int kCurveLinear = 4;
+constexpr uint64_t kNpcReceivers[] = {
+    RED4ext::FNV1a64("radio_car_lowend_npc"), RED4ext::FNV1a64("radio_car_muscle_npc"),
+    RED4ext::FNV1a64("radio_car_sports_npc"), RED4ext::FNV1a64("radio_car_suv_npc"),
+    RED4ext::FNV1a64("radio_car_truck_npc"),  RED4ext::FNV1a64("radio_car_hyper_npc"),
+    RED4ext::FNV1a64("radio_car_police_npc"),
+};
+
+using AkSetRtpcByPlayingIdFn = int (*)(uint32_t aRtpc, float aValue, uint32_t aPlayingId, int32_t aMs, int aCurve,
+                                       bool aBypass);
+
+// Live NPC radio voices by playing id, with the round they were last seen in.
+std::unordered_map<uint32_t, uint32_t> g_levelled;
+uint32_t g_round = 0;
+
+bool IsNpcReceiver(uint64_t aName)
 {
-    static bool done = false;
-    static uint64_t next = 0;
-    const uint64_t now = GetTickCount64();
-    if (done || now < next)
+    for (const auto name : kNpcReceivers)
+    {
+        if (name == aName)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SafeCollectVoices(uintptr_t aRootSlot, uint32_t* aOut, uint32_t aMax, uint32_t* aCount)
+{
+    *aCount = 0;
+    __try
+    {
+        const auto root = Read<uintptr_t>(aRootSlot);
+        const auto audio = root ? Read<uintptr_t>(root + 0xa8) : 0;
+        const auto manager = audio ? Read<uintptr_t>(audio + 0xe0) : 0;
+        const auto stations = manager ? Read<uintptr_t>(manager) : 0;
+        const auto stationCount = manager ? Read<uint32_t>(manager + 0xc) : 0;
+        for (uint32_t i = 0; stations && i < stationCount && i < 128; ++i)
+        {
+            const auto station = Read<uintptr_t>(stations + i * 8);
+            const auto listeners = station ? Read<uintptr_t>(station + 0x100) : 0;
+            const auto listenerCount = station ? Read<uint32_t>(station + 0x10c) : 0;
+            for (uint32_t l = 0; listeners && l < listenerCount && l < 64; ++l)
+            {
+                const auto emitter = Read<uintptr_t>(listeners + l * 8);
+                const uint8_t kind = emitter ? Read<uint8_t>(emitter + 0x12c) : 0;
+                if (kind != 2 && kind != 3)
+                {
+                    continue;
+                }
+                const auto broadcast = Read<uint64_t>(emitter + 0x120);
+                if (!IsNpcReceiver(broadcast))
+                {
+                    continue;
+                }
+                const auto sounds = Read<uintptr_t>(emitter + 0x58);
+                const auto soundCount = Read<uint32_t>(emitter + 0x64);
+                for (uint32_t k = 0; sounds && k < soundCount && k < 64; ++k)
+                {
+                    const auto element = Read<uintptr_t>(sounds + k * 8);
+                    const auto sound = element ? Read<uintptr_t>(element) : 0;
+                    if (sound && Read<uint64_t>(sound + 0x8) == broadcast)
+                    {
+                        const auto id = Read<uint32_t>(sound + 0x44);
+                        if (id && Read<uint8_t>(sound + 0x59) == 3 && *aCount < aMax)
+                        {
+                            aOut[(*aCount)++] = id;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
     {
         return false;
     }
-    next = now + 1000;
-    float found = 0.0f;
-    switch (SetMixerVolume(&found))
+}
+
+// The voice's share of the range, from its playing id: the same id always gets the same level.
+float ShareOf(uint32_t aPlayingId)
+{
+    uint32_t h = aPlayingId * 2654435761u;
+    h ^= h >> 15;
+    h *= 2246822519u;
+    h ^= h >> 13;
+    return static_cast<float>(h) / 4294967295.0f;
+}
+
+// The curve value that lowers the mixer by aDb (0 or less). The curve's points are amplitude - 1 (-0.7488 is
+// -12 dB) with an S-curve between them, taken here as 3t^2 - 2t^3; the meter is the check on that.
+float CurveValueFor(float aDb)
+{
+    const float bottom = std::pow(10.0f, kCurveBottomDb / 20.0f) - 1.0f;
+    const float y = std::pow(10.0f, aDb / 20.0f) - 1.0f;
+    const float t = std::fmin(1.0f, std::fmax(0.0f, (y - bottom) / -bottom));
+    return 0.5f - std::sin(std::asin(1.0f - 2.0f * t) / 3.0f);
+}
+
+void LevelVoices()
+{
+    static const uintptr_t rootSlot = ResolveByHash(kHashEngineRoot);
+    static const auto setRtpc =
+        AtRva<AkSetRtpcByPlayingIdFn>(0x1acf6a0, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57});
+    static bool stopped = false;
+    if (stopped)
     {
-    case Mixer::Set:
-        Log("the NPC car radio mixer plays at " + std::to_string(found) + " dB");
-        done = true;
-        break;
-    case Mixer::Unexpected:
-        Log("the NPC car radio mixer holds " + std::to_string(found) + " dB, not the game's -8 - left as it is");
-        done = true;
-        break;
-    case Mixer::NotLoaded:
-        break;
+        return;
     }
+    if (!rootSlot || !setRtpc)
+    {
+        stopped = true;
+        Log("the per-car level is not this game build's - every car plays at the top of the range");
+        return;
+    }
+    uint32_t voices[256];
+    uint32_t count = 0;
+    if (!SafeCollectVoices(rootSlot, voices, 256, &count))
+    {
+        stopped = true;
+        Log("the station listeners could not be read - every car plays at the top of the range");
+        return;
+    }
+    ++g_round;
+    const float span = std::fmin(0.0f, g_levelBottom - g_levelTop);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        auto [it, added] = g_levelled.try_emplace(voices[i], g_round);
+        it->second = g_round;
+        if (added)
+        {
+            setRtpc(kRtpcEngageMovingFaster, CurveValueFor(span * (1.0f - ShareOf(voices[i]))), voices[i], 0,
+                    kCurveLinear, false);
+        }
+    }
+    std::erase_if(g_levelled, [](const auto& aEntry) { return aEntry.second != g_round; });
+}
+
+#ifdef ATR_TUNE
+// Tuning build only: atr_tune.txt beside the DLL, read every 2 s. One line, `levels <bottom dB> <top dB>`. A
+// change sets the mixer to the new top and levels every live voice again.
+void ReadTuning()
+{
+    static uint64_t next = 0;
+    const uint64_t now = GetTickCount64();
+    if (now < next)
+    {
+        return;
+    }
+    next = now + 2000;
+    wchar_t path[MAX_PATH] = {};
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&ReadTuning), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    std::wstring file(path);
+    file = file.substr(0, file.find_last_of(L'\\') + 1) + L"atr_tune.txt";
+    FILE* f = _wfopen(file.c_str(), L"r");
+    if (!f)
+    {
+        return;
+    }
+    float bottom = 0.0f, top = 0.0f;
+    const bool read = std::fscanf(f, " levels %f %f", &bottom, &top) == 2;
+    std::fclose(f);
+    if (!read || (bottom == g_levelBottom && top == g_levelTop))
+    {
+        return;
+    }
+    const float previous = g_levelTop;
+    g_levelBottom = bottom;
+    g_levelTop = top;
+    float found = 0.0f;
+    SetMixerVolume(g_levelTop, previous, &found);
+    g_levelled.clear();
+    char line[128];
+    std::snprintf(line, sizeof(line), "tune: levels %.1f to %.1f dB, mixer at %.1f dB", bottom, top, found);
+    Log(line);
+}
+#endif
+
+// Once a second until the radio bank is loaded and the mixer set; the bank stays loaded for the session, save
+// loads and the main menu included, so one write holds. After that, every 250 ms, each new radio voice gets its
+// level.
+bool OnUpdate(RED4ext::CGameApplication*)
+{
+    static bool mixerDone = false;
+    static uint64_t next = 0;
+    const uint64_t now = GetTickCount64();
+    if (now < next)
+    {
+        return false;
+    }
+    if (!mixerDone)
+    {
+        next = now + 1000;
+        float found = 0.0f;
+        switch (SetMixerVolume(g_levelTop, g_levelTop, &found))
+        {
+        case Mixer::Set:
+            Log("the NPC car radio mixer plays at " + std::to_string(found) + " dB");
+            mixerDone = true;
+            break;
+        case Mixer::Unexpected:
+            Log("the NPC car radio mixer holds " + std::to_string(found) + " dB, not the game's -8 - left as it is");
+            mixerDone = true;
+            break;
+        case Mixer::NotLoaded:
+            break;
+        }
+        return false;
+    }
+    next = now + 250;
+#ifdef ATR_TUNE
+    ReadTuning();
+#endif
+    LevelVoices();
     return false;
 }
 } // namespace

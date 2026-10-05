@@ -14,3 +14,4 @@ images/
 .vscode/
 .history/
 *.log
+plugin/build-tune/

@@ -17,3 +17,9 @@ target_compile_definitions(AudibleTrafficRadios PRIVATE
 set_target_properties(AudibleTrafficRadios PROPERTIES
     OUTPUT_NAME "AudibleTrafficRadios"
     SUFFIX ".dll")
+
+# A tuning build reads atr_tune.txt beside the DLL to change the level range while the game runs. Never released.
+option(ATR_TUNE "Read atr_tune.txt for the level range" OFF)
+if(ATR_TUNE)
+    target_compile_definitions(AudibleTrafficRadios PRIVATE ATR_TUNE)
+endif()
