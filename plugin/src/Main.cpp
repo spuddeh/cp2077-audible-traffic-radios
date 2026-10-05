@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <string>
@@ -541,6 +542,103 @@ void MeterTick()
         Db(g_worldMeter.b.load()) + " dB (max " + Db(g_worldMeter.maxA.exchange(0.0f)) + ")");
 }
 
+// --- a loaded Wwise node's property, set in memory ---
+// g_pIndex (0x339f7b8) holds one table per object type, 0x58 bytes apart; audio nodes are table 0. A table keeps
+// its buckets at +0x40 and their count at +0x48; an object sits in bucket id % count, chained through +0x8, its
+// id at +0x10 (CAkIndexable::InternalRemove walks it this way). The node's property bundle is at +0x88: a count
+// byte, that many prop ids, then the values from the next 4-byte boundary. CAkParameterNode::SetAkProp
+// (0x1b07990) is the setter Wwise's own live editing calls; it runs under the global audio lock
+// (CAkFunctionCritical, 0x1af6d90 / 0x1af7100), as Wwise's public API does.
+using AkSetPropFn = void (*)(void* aNode, int aProp, float aValue, float aMin, float aMax);
+using AkCriticalFn = void (*)(void* aSelf);
+
+uintptr_t SafeFindNode(uint32_t aId)
+{
+    __try
+    {
+        const auto index = Read<uintptr_t>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + 0x339f7b8);
+        if (!index)
+        {
+            return 0;
+        }
+        const auto buckets = Read<uintptr_t>(index + 0x40);
+        const auto count = Read<uint32_t>(index + 0x48);
+        if (!buckets || !count)
+        {
+            return 0;
+        }
+        for (auto node = Read<uintptr_t>(buckets + (aId % count) * 8); node; node = Read<uintptr_t>(node + 0x8))
+        {
+            if (Read<uint32_t>(node + 0x10) == aId)
+            {
+                return node;
+            }
+        }
+        return 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+// The value of one prop in the node's bundle, or NaN when the bundle does not hold it.
+float SafeNodeProp(uintptr_t aNode, uint8_t aProp)
+{
+    __try
+    {
+        const auto bundle = Read<uintptr_t>(aNode + 0x88);
+        if (!bundle)
+        {
+            return std::numeric_limits<float>::quiet_NaN();
+        }
+        const uint8_t count = Read<uint8_t>(bundle);
+        const uintptr_t values = bundle + ((count + 4u) & ~3u);
+        for (uint8_t i = 0; i < count; ++i)
+        {
+            if (Read<uint8_t>(bundle + 1 + i) == aProp)
+            {
+                return Read<float>(values + i * 4);
+            }
+        }
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+}
+
+bool SetNodeProp(uint32_t aId, uint8_t aProp, float aValue)
+{
+    static const auto setProp = AtRva<AkSetPropFn>(0x1b07990, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83});
+    static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
+    static const auto lockOff = AtRva<AkCriticalFn>(0x1af7100, {0x48, 0x83, 0xEC, 0x28, 0xFF, 0x15});
+    if (!setProp || !lockOn || !lockOff)
+    {
+        Log("node: SetAkProp or the audio lock did not match this build");
+        return false;
+    }
+    alignas(16) uint8_t critical[64] = {};
+    lockOn(critical);
+    const uintptr_t node = SafeFindNode(aId);
+    const float before = node ? SafeNodeProp(node, aProp) : 0.0f;
+    if (node)
+    {
+        setProp(reinterpret_cast<void*>(node), aProp, aValue, 0.0f, 0.0f);
+    }
+    const float after = node ? SafeNodeProp(node, aProp) : 0.0f;
+    lockOff(critical);
+    if (!node)
+    {
+        Log("node: " + std::to_string(aId) + " is not loaded");
+        return false;
+    }
+    Log("node: " + std::to_string(aId) + " prop " + std::to_string(aProp) + " " + std::to_string(before) + " -> " +
+        std::to_string(after));
+    return true;
+}
+
 // --- dev harness ---
 // While atr_dev.txt sits beside the plugin, it is re-read every second and applied when it changes:
 //   bank <absolute path>       load a test bank once
@@ -593,6 +691,16 @@ void DevTick()
                 g_worldMeter.bus = bus;
                 Log("dev: meter on bus " + std::to_string(bus) + " -> " +
                     std::to_string(g_registerMeter(bus, &WorldMeterCallback, kMeterPeakAndRms, nullptr)));
+            }
+        }
+        else if (verb == "nodeprop")
+        {
+            uint32_t id = 0;
+            int prop = -1;
+            float value = 0.0f;
+            if (words >> id >> prop >> value)
+            {
+                SetNodeProp(id, static_cast<uint8_t>(prop), value);
             }
         }
         else if (verb == "fast" || verb == "gain" || verb == "scale")
