@@ -545,10 +545,13 @@ void MeterTick()
 // --- a loaded Wwise node's property, set in memory ---
 // g_pIndex (0x339f7b8) holds one table per object type, 0x58 bytes apart; audio nodes are table 0. A table keeps
 // its buckets at +0x40 and their count at +0x48; an object sits in bucket id % count, chained through +0x8, its
-// id at +0x10 (CAkIndexable::InternalRemove walks it this way). The node's property bundle is at +0x88: a count
-// byte, that many prop ids, then the values from the next 4-byte boundary. CAkParameterNode::SetAkProp
-// (0x1b07990) is the setter Wwise's own live editing calls; it runs under the global audio lock
-// (CAkFunctionCritical, 0x1af6d90 / 0x1af7100), as Wwise's public API does.
+// id at +0x10 (CAkIndexable::InternalRemove walks it this way). That pointer is the object's CAkPBIAware part,
+// 0x10 into it: CAkParameterNodeBase's constructor (0x1adce59) puts IAkEffectSlotsOwner at +0x00, the
+// IAkModulatorXfrmProvider vtable shared by every parameter node (0x2ee0798) at +0x08 and CAkPBIAware at +0x10.
+// From the object start, the property bundle is at +0x88: a count byte, that many prop ids, then the values from
+// the next 4-byte boundary. CAkParameterNode::SetAkProp (0x1b07990) takes the object start; it is the setter
+// Wwise's own live editing calls, run here under the global audio lock (CAkFunctionCritical, 0x1af6d90 /
+// 0x1af7100) as Wwise's public API does. A value is written only over the expected one or the one last written.
 using AkSetPropFn = void (*)(void* aNode, int aProp, float aValue, float aMin, float aMax);
 using AkCriticalFn = void (*)(void* aSelf);
 
@@ -582,12 +585,27 @@ uintptr_t SafeFindNode(uint32_t aId)
     }
 }
 
-// The value of one prop in the node's bundle, or NaN when the bundle does not hold it.
-float SafeNodeProp(uintptr_t aNode, uint8_t aProp)
+// The parameter node's object start, or 0 when the vtable at +0x08 is not the parameter nodes' shared one.
+uintptr_t SafeNodeObject(uintptr_t aIndexed)
+{
+    static const uintptr_t xfrmVtbl = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + 0x2ee0798;
+    __try
+    {
+        const uintptr_t object = aIndexed - 0x10;
+        return Read<uintptr_t>(object + 0x08) == xfrmVtbl ? object : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+// The value of one prop in the object's bundle, or NaN when the bundle does not hold it.
+float SafeNodeProp(uintptr_t aObject, uint8_t aProp)
 {
     __try
     {
-        const auto bundle = Read<uintptr_t>(aNode + 0x88);
+        const auto bundle = Read<uintptr_t>(aObject + 0x88);
         if (!bundle)
         {
             return std::numeric_limits<float>::quiet_NaN();
@@ -609,7 +627,9 @@ float SafeNodeProp(uintptr_t aNode, uint8_t aProp)
     }
 }
 
-bool SetNodeProp(uint32_t aId, uint8_t aProp, float aValue)
+std::unordered_map<uint64_t, float> g_nodeWritten;  // (id << 8 | prop) -> value last written
+
+bool SetNodeProp(uint32_t aId, uint8_t aProp, float aValue, float aExpected)
 {
     static const auto setProp = AtRva<AkSetPropFn>(0x1b07990, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83});
     static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
@@ -619,24 +639,36 @@ bool SetNodeProp(uint32_t aId, uint8_t aProp, float aValue)
         Log("node: SetAkProp or the audio lock did not match this build");
         return false;
     }
+    const uint64_t key = (static_cast<uint64_t>(aId) << 8) | aProp;
+    const auto last = g_nodeWritten.find(key);
     alignas(16) uint8_t critical[64] = {};
     lockOn(critical);
-    const uintptr_t node = SafeFindNode(aId);
-    const float before = node ? SafeNodeProp(node, aProp) : 0.0f;
-    if (node)
+    const uintptr_t indexed = SafeFindNode(aId);
+    const uintptr_t object = indexed ? SafeNodeObject(indexed) : 0;
+    const float before = object ? SafeNodeProp(object, aProp) : std::numeric_limits<float>::quiet_NaN();
+    const bool expected = std::fabs(before - aExpected) < 0.001f ||
+                          (last != g_nodeWritten.end() && std::fabs(before - last->second) < 0.001f);
+    float after = before;
+    if (object && expected)
     {
-        setProp(reinterpret_cast<void*>(node), aProp, aValue, 0.0f, 0.0f);
+        setProp(reinterpret_cast<void*>(object), aProp, aValue, 0.0f, 0.0f);
+        after = SafeNodeProp(object, aProp);
     }
-    const float after = node ? SafeNodeProp(node, aProp) : 0.0f;
     lockOff(critical);
-    if (!node)
+    const std::string head = "node: " + std::to_string(aId) + " prop " + std::to_string(aProp) + " ";
+    if (!indexed || !object)
     {
-        Log("node: " + std::to_string(aId) + " is not loaded");
+        Log(head + (indexed ? "is not a parameter node - nothing written" : "is not loaded"));
         return false;
     }
-    Log("node: " + std::to_string(aId) + " prop " + std::to_string(aProp) + " " + std::to_string(before) + " -> " +
-        std::to_string(after));
-    return true;
+    if (!expected)
+    {
+        Log(head + "holds " + std::to_string(before) + ", not " + std::to_string(aExpected) + " - nothing written");
+        return false;
+    }
+    g_nodeWritten[key] = after;
+    Log(head + std::to_string(before) + " -> " + std::to_string(after));
+    return std::fabs(after - aValue) < 0.001f;
 }
 
 // Dev: the node's first 0x100 bytes, its prop bundle, and every 4-byte slot holding aFloat, in the node or one
@@ -778,9 +810,10 @@ void DevTick()
             uint32_t id = 0;
             int prop = -1;
             float value = 0.0f;
-            if (words >> id >> prop >> value)
+            float expected = 0.0f;
+            if (words >> id >> prop >> value >> expected)
             {
-                SetNodeProp(id, static_cast<uint8_t>(prop), value);
+                SetNodeProp(id, static_cast<uint8_t>(prop), value, expected);
             }
         }
         else if (verb == "fast" || verb == "gain" || verb == "scale")
