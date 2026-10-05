@@ -260,6 +260,101 @@ uintptr_t SwapTarget(uintptr_t aEmitter, uint64_t aSwap)
     return metadata;
 }
 
+// --- receiver repoint (experiment) ---
+// A sound's name resolves to its Wwise event through audio::GMetadataManager's Map<CName, AudioEventMetadata>
+// (+0x120; values at +0x130, 0x68 bytes each, wwiseId at +0x30), looked up by SoundBuilder::SetupPlayContext.
+// Repointing a vanilla receiver's row at a cloned event keeps the car on its vanilla receiver name. The row
+// is written only while it still holds the vanilla id, the FNV-1 of the name.
+constexpr uintptr_t kRvaMetadataManager = 0x3427900;
+constexpr size_t kMetadataEventMap = 0x120;
+constexpr size_t kMetadataEventValues = 0x130;
+constexpr size_t kEventMetadataStride = 0x68;
+constexpr size_t kEventMetadataWwiseId = 0x30;
+using MapFindFn = bool (*)(void* aMap, const uint64_t* aKey, uint32_t* aIndex);
+
+struct RepointRow
+{
+    const char* vanilla;
+    const char* clone;
+};
+constexpr RepointRow kRepoint[] = {
+    {"radio_car_lowend_npc", "atr_v0_exact"},
+    {"radio_car_suv_npc", "atr_v1_world_bus"},
+    {"radio_car_sports_npc", "atr_v2_world_attenuation"},
+};
+bool g_repointed = false;
+
+uint32_t Fnv1(const char* aName)
+{
+    uint32_t h = 2166136261u;
+    for (const char* c = aName; *c; ++c)
+    {
+        h *= 16777619u;
+        h ^= static_cast<uint8_t>(*c >= 'A' && *c <= 'Z' ? *c + 32 : *c);
+    }
+    return h;
+}
+
+// 0 missing map, 1 row not found, 2 row holds another id, 3 written, 4 already the clone
+int SafeRepointRow(MapFindFn aFind, uint64_t aKey, uint32_t aVanilla, uint32_t aClone)
+{
+    __try
+    {
+        const auto manager = Read<uintptr_t>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + kRvaMetadataManager);
+        if (!manager)
+        {
+            return 0;
+        }
+        uint32_t index = 0;
+        if (!aFind(reinterpret_cast<void*>(manager + kMetadataEventMap), &aKey, &index))
+        {
+            return 1;
+        }
+        const auto values = Read<uintptr_t>(manager + kMetadataEventValues);
+        auto* id = reinterpret_cast<uint32_t*>(values + index * kEventMetadataStride + kEventMetadataWwiseId);
+        if (*id == aClone)
+        {
+            return 4;
+        }
+        if (*id != aVanilla)
+        {
+            return 2;
+        }
+        *id = aClone;
+        return 3;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+void Repoint()
+{
+    static const auto find = AtRva<MapFindFn>(0xb4ec2c, {0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74});
+    if (!find)
+    {
+        Log("repoint: the metadata map lookup did not match this build - nothing repointed");
+        g_repointed = true;
+        return;
+    }
+    static const char* kResult[] = {"metadata not loaded yet", "no such row", "row holds an unexpected id",
+                                    "repointed", "already repointed"};
+    bool pending = false;
+    std::string line = "repoint:";
+    for (const auto& row : kRepoint)
+    {
+        const int r = SafeRepointRow(find, RED4ext::CName(row.vanilla).hash, Fnv1(row.vanilla), Fnv1(row.clone));
+        pending |= r == 0;
+        line += std::string(" ") + row.vanilla + " -> " + row.clone + " " + kResult[r] + ";";
+    }
+    if (!pending)
+    {
+        g_repointed = true;
+        Log(line);
+    }
+}
+
 bool SafeBoostAll()
 {
     __try
@@ -283,13 +378,6 @@ bool SafeBoostAll()
                 const auto emitter = Read<uintptr_t>(listeners + l * 8);
                 if (emitter && Read<uint8_t>(emitter + kListenerKind) == kKindTraffic)
                 {
-                    static const uint64_t swap = RED4ext::CName(kSwapReceiver).hash;
-                    if (const auto metadata = SwapTarget(emitter, swap))
-                    {
-                        g_swapLog.push_back(Read<uint64_t>(metadata + kMetadataReceiverEvent));
-                        *reinterpret_cast<uint64_t*>(metadata + kMetadataReceiverEvent) = swap;
-                        g_swappedSets.insert(metadata);
-                    }
                     if (kBoost)
                     {
                         Boost(emitter);
@@ -319,11 +407,9 @@ bool OnUpdate(RED4ext::CGameApplication*)
     {
         Log("boost: the station walk faulted - skipped this pass");
     }
-    for (const auto old : g_swapLog)
+    if (!g_repointed)
     {
-        const char* text = RED4ext::CName(old).ToString();
-        Log(std::string("swap: a traffic sound set now receives through ") + kSwapReceiver + " instead of " +
-            (text && *text ? text : "?") + " (" + std::to_string(g_swappedSets.size()) + " sets)");
+        Repoint();
     }
     static uint64_t lastReport = 0;
     if (now - lastReport >= 10000 && g_boosted != before)
@@ -365,7 +451,7 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle aHandle,
                 .OnExit = nullptr,
             };
             aSdk->gameStates->Add(aHandle, RED4ext::EGameStateType::Running, &state);
-            Log(std::string("swap: traffic receivers move to ") + kSwapReceiver + (kBoost ? ", boost on" : ", boost off"));
+            Log(std::string("repoint: traffic receivers will play the cloned NPC chains") + (kBoost ? ", boost on" : ", boost off"));
         }
         else
         {
