@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
@@ -190,7 +191,7 @@ enum class Mixer
 };
 
 // Sets the mixer's volume when it holds the vanilla value; reports what it found.
-Mixer SetMixerVolume(float* aFound)
+Mixer SetMixerVolume(float* aFound, uintptr_t* aObject)
 {
     static const auto setProp = AtRva<AkSetPropFn>(0x1b07990, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83});
     static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
@@ -198,11 +199,13 @@ Mixer SetMixerVolume(float* aFound)
     if (!setProp || !lockOn || !lockOff)
     {
         *aFound = std::numeric_limits<float>::quiet_NaN();
+        *aObject = 0;
         return Mixer::Unexpected;
     }
     alignas(16) uint8_t critical[16] = {};
     lockOn(critical);
     const uintptr_t object = SafeFindObject(kNpcRadioMixer);
+    *aObject = object;
     const float before = object ? SafeProp(object, kPropVolume) : std::numeric_limits<float>::quiet_NaN();
     Mixer result = Mixer::NotLoaded;
     if (object && std::fabs(before - kVanillaVolume) < 0.001f)
@@ -224,13 +227,24 @@ bool OnUpdate(RED4ext::CGameApplication*)
 {
     static uint64_t next = 0;
     static Mixer last = Mixer::NotLoaded;
+    static uintptr_t lastObject = 0;
     const uint64_t now = GetTickCount64();
     if (now < next || last == Mixer::Unexpected)
     {
         return false;
     }
     float found = 0.0f;
-    const Mixer result = SetMixerVolume(&found);
+    uintptr_t object = 0;
+    const Mixer result = SetMixerVolume(&found, &object);
+    // Which mixer object the bank gave: a new address means the radio bank was loaded again.
+    if (object != lastObject)
+    {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "the NPC car radio mixer object is at %llx (was %llx)",
+                      static_cast<unsigned long long>(object), static_cast<unsigned long long>(lastObject));
+        Log(buf);
+        lastObject = object;
+    }
     if (result != last || (result == Mixer::Set && std::fabs(found - kMixerVolume) >= 0.001f))
     {
         if (result == Mixer::Set)
