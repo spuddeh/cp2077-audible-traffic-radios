@@ -39,6 +39,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <set>
 #include <utility>
 #include <limits>
@@ -1165,6 +1166,63 @@ void AttachOcclusion()
 }
 
 #ifdef ATR_TUNE
+// --- tuning build: EQ view ---
+// Every gain, Q and output value a Parametric EQ receives: CAkParameterEQFXParams::SetParam (0x1ab4640: this, short
+// id, const float*, size) is hooked. Ids: band * 5 + 1 gain (dB, clamped to +-24), + 3 Q, 15 output gain (dB). The
+// audio thread only records; the game thread logs, with each block's band 1 and band 3 frequency to tell the
+// receivers apart (fields at +0x10 + band * 20).
+using EqSetParamFn = int (*)(void* aThis, int16_t aId, const void* aValue, uint32_t aSize);
+EqSetParamFn g_eqSetParam = nullptr;
+struct EqCall
+{
+    void* self;
+    int16_t id;
+    float value;
+};
+std::mutex g_eqMutex;
+std::vector<EqCall> g_eqCalls;
+
+int EqSetParamDetour(void* aThis, int16_t aId, const void* aValue, uint32_t aSize)
+{
+    if (aValue && aSize == sizeof(float) && (aId % 5 == 1 || aId % 5 == 3 || aId == 15))
+    {
+        std::lock_guard lock(g_eqMutex);
+        if (g_eqCalls.size() < 4096)
+        {
+            g_eqCalls.push_back({aThis, aId, *static_cast<const float*>(aValue)});
+        }
+    }
+    return g_eqSetParam(aThis, aId, aValue, aSize);
+}
+
+void HookEqView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk)
+{
+    const auto target = AtRva<void*>(0x1ab4640, {0x4C, 0x8B, 0xC9, 0x4D, 0x85, 0xC0, 0x75, 0x05});
+    const bool hooked = target && aSdk->hooking->Attach(aHandle, target, reinterpret_cast<void*>(&EqSetParamDetour),
+                                                        reinterpret_cast<void**>(&g_eqSetParam));
+    Log(hooked ? "eq view: hooked" : "eq view: SetParam not this game build's - no EQ view");
+}
+
+void DrainEqView()
+{
+    std::vector<EqCall> calls;
+    {
+        std::lock_guard lock(g_eqMutex);
+        calls.swap(g_eqCalls);
+    }
+    for (const auto& call : calls)
+    {
+        const auto block = reinterpret_cast<uintptr_t>(call.self);
+        const char* what = call.id == 15 ? "output" : call.id % 5 == 1 ? "gain" : "Q";
+        char line[160];
+        std::snprintf(line, sizeof(line), "eq %p (f1 %.0f, f3 %.0f): band %d %s = %.3f", call.self,
+                      Read<float>(block + 0x10), Read<float>(block + 0x10 + 2 * 20), call.id / 5 + 1, what, call.value);
+        Log(line);
+    }
+}
+#endif
+
+#ifdef ATR_TUNE
 // Tuning build only: atr_tune.txt beside the DLL, read every 2 s. Lines `levels <bottom dB> <top dB>` and
 // `muffle <dB> <low-pass>`. A change writes the mixer again on the next frame; a levels change also levels every
 // live voice again. `open 1` treats every traffic car as fully open, for comparing by ear; `weights <window>
@@ -1331,6 +1389,7 @@ bool OnUpdate(RED4ext::CGameApplication*)
 #ifdef ATR_TUNE
     ReadTuning();
     TimedLevelVoices();
+    DrainEqView();
 #else
     LevelVoices();
     Muffle();
@@ -1364,6 +1423,9 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle aHandle,
         g_handle = aHandle;
         PatchPredicate();
         PatchCarRadioRule();
+#ifdef ATR_TUNE
+        HookEqView(aHandle, aSdk);
+#endif
         static RED4ext::v1::GameState state{
             .OnEnter = nullptr,
             .OnUpdate = OnUpdate,
