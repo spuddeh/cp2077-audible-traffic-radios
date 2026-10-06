@@ -574,6 +574,12 @@ void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
     {
         g_mixerNow = target;
         g_interior = interior;
+#ifdef ATR_TUNE
+        char line[128];
+        std::snprintf(line, sizeof(line), "muffle: veh_interior %.2f, mixer %+.1f dB, low-pass %.0f", interior, target,
+                      g_muffleLpf * interior);
+        Log(line);
+#endif
     }
     else
     {
