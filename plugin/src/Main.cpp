@@ -457,6 +457,11 @@ void LevelVoices()
 // veh_interior (290459857), read global through AK::SoundEngine::Query::GetRTPCValue (0x1ad2c60), is the game's
 // own "inside a car" value: 1 in first person in a car, 0 in third person or on foot, lowered by broken glass. The
 // mixer follows it: volume g_levelTop + g_muffleDb * value, low-pass g_muffleLpf * value.
+//
+// Both the query and the mixer write enter Wwise's global lock, a CRITICAL_SECTION the audio thread holds for its
+// whole render pass, so waiting on it stalls the game thread for milliseconds. The lock is tried instead: when the
+// audio thread has it, this frame is skipped. The section is re-entrant, so the calls inside take it again freely.
+// Its address is the lea at +0x17 in CAkFunctionCritical's enter (0x1af6d90): 48 8D 0D rel32.
 constexpr uint32_t kRtpcVehInterior = 290459857;
 using AkGetRtpcValueFn = int (*)(uint32_t aRtpc, uint64_t aGameObject, uint32_t aPlayingId, float* aValue,
                                  int* aScope);
@@ -476,20 +481,45 @@ float SafeInterior(AkGetRtpcValueFn aGet)
     }
 }
 
+LPCRITICAL_SECTION WwiseLock()
+{
+    const auto enter = AtRva<const uint8_t*>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
+    if (!enter || enter[0x17] != 0x48 || enter[0x18] != 0x8D || enter[0x19] != 0x0D)
+    {
+        return nullptr;
+    }
+    int32_t rel = 0;
+    std::memcpy(&rel, enter + 0x1a, sizeof(rel));
+    return reinterpret_cast<LPCRITICAL_SECTION>(const_cast<uint8_t*>(enter) + 0x1e + rel);
+}
+
+void MuffleLocked(AkGetRtpcValueFn aGet, bool* aStopped);
+
 void Muffle()
 {
     static const auto get = AtRva<AkGetRtpcValueFn>(0x1ad2c60, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C});
+    static const auto lock = WwiseLock();
     static bool stopped = false;
     if (stopped)
     {
         return;
     }
-    if (!get)
+    if (!get || !lock)
     {
         stopped = true;
         Log("the in-car muffling is not this game build's - radios are not muffled from inside a car");
         return;
     }
+    if (!TryEnterCriticalSection(lock))
+    {
+        return;
+    }
+    MuffleLocked(get, &stopped);
+    LeaveCriticalSection(lock);
+}
+
+void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
+{
     const float interior = SafeInterior(get);
     if (interior < 0.0f || std::fabs(interior - g_interior) < 0.01f)
     {
@@ -504,7 +534,7 @@ void Muffle()
     }
     else
     {
-        stopped = true;
+        *aStopped = true;
         Log("the NPC car radio mixer holds " + std::to_string(found) + " dB, not this plugin's - muffling stopped");
     }
 }
