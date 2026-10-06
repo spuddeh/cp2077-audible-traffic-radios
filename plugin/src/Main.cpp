@@ -434,8 +434,9 @@ void LevelVoices()
         it->second = g_round;
         if (added)
         {
+            // Bypass the parameter's own smoothing, which is built for a car's speed: the level applies at once.
             setRtpc(kRtpcEngageMovingFaster, CurveValueFor(span * (1.0f - ShareOf(voices[i].key))),
-                    voices[i].playingId, 0, kCurveLinear, false);
+                    voices[i].playingId, 0, kCurveLinear, true);
         }
     }
     std::erase_if(g_levelled, [](const auto& aEntry) { return aEntry.second != g_round; });
