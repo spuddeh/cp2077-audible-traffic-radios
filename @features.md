@@ -52,9 +52,12 @@
 - 2026-10-06: the graded fade, read through the EQ view and heard on sports (Quadra Turbo), truck (Kaukaz Zeya) and
   low-end (Thorton Galena) cars: the treble shelf steps evenly (-20 to 0, -24 to 0), the other bands hold, one
   shattered pane and a torn-off door step the same way.
+- 2026-10-06: in-car muffling lands exactly (first person: mixer +9 to +5 dB, low-pass 0 to 25, back in third
+  person, about 1 s each way), heard by the user. Scan cost with open-air cars: 1.6 to 6 us average (levels and
+  muffling about 3, reading the cars up to 1.4, open-air up to 0.8); the tuning build's overlay file write had
+  added 10 to 25 us and now runs outside the timed scan.
 
 ## Pending checks
-- [ ] The muffling at vanilla's values, by ear.
 
 ## Planned
 - [ ] A preview build for the author of Immersive NPC Car Stereos (Priority: High).
