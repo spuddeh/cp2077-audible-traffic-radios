@@ -1020,8 +1020,10 @@ int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDe
 // Each NPC receiver's Parametric EQ gets curves on atr_open_air that lift what the closed body takes away: at 1
 // every band that cuts is at 0 dB and every notch narrowed to Q 30, while the boosts (the speakers' and cabin's bass)
 // stay, and the output level drops by its makeup gain plus what the lift adds in loudness (pink noise, K-weighted).
-// An effect reads a dB curve's points as plain dB (unlike a node's volume curve, stored as amplitude - 1:
-// a +24 dB lift stored as 14.85 measured +15 dB), so the points are dB, five per curve (Q in ratio). The attach is CAkFxBase's own (0x1b50b20, the
+// An effect parameter takes the curve's value in place of its own setting (measured through SetParam: a closed
+// car's band 3 gain arrived as 0, not -20), and a curve marked dB is converted again on the way. So every curve is
+// exclusive with no scaling and carries the absolute value: the EQ's own setting at 0, the open value at 1, five
+// points (gains and output linear in dB, Q in ratio). The attach is CAkFxBase's own (0x1b50b20, the
 // one a bank load calls for an effect's RTPC): (effect, curve description, points), 1 on success, and it reaches
 // effect instances already playing. Effects sit in g_pIndex's table 9, the indexed pointer being the object (vtable
 // CAkFxCustom 0x2f75ac0). A Parametric EQ parameter is band * 5 + (0 type, 1 gain, 2 frequency, 3 Q, 4 on), and 15
@@ -1112,7 +1114,7 @@ std::pair<int, int> AttachEqFades()
             ++tried;
             done += fx && SafeFxAttach(attach, fx, desc, points) == 1 ? 1 : 0;
         };
-        const auto dbBy = [](float aDb) { return [aDb](float aT) { return aDb * aT; }; };
+        const auto from = [](float aClosed, float aOpen) { return [=](float aT) { return aClosed + (aOpen - aClosed) * aT; }; };
         for (uint32_t band = 0; band < 3; ++band)
         {
             if (!eq.on[band])
@@ -1122,16 +1124,16 @@ std::pair<int, int> AttachEqFades()
             if (eq.type[band] == kNotch)
             {
                 const float q = eq.q[band];
-                add(band * 5 + 3, 1, 0, [q](float aT) { return q * std::pow(kOpenNotchQ / q, aT); });  // exclusive
+                add(band * 5 + 3, 1, 0, [q](float aT) { return q * std::pow(kOpenNotchQ / q, aT); });
             }
             else if (eq.gain[band] < 0.0f)
             {
-                add(band * 5 + 1, 2, 2, dbBy(-eq.gain[band]));  // additive, dB
+                add(band * 5 + 1, 1, 0, from(eq.gain[band], 0.0f));
             }
         }
         if (eq.output != 0.0f || eq.louder != 0.0f)
         {
-            add(15, 2, 2, dbBy(-eq.output - eq.louder));
+            add(15, 1, 0, from(eq.output, -eq.louder));
         }
     }
     return {done, tried};
