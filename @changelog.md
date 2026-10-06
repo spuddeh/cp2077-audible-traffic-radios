@@ -2,6 +2,10 @@
 
 ### [2026-10-06] Session
 - **[AudibleTrafficRadios] [Main.cpp] v0.1.0** (open-air cars and occlusion):
+    - [Change] The level range tops out at +9 dB (was +12): some cars sounded too loud.
+    - [Change] Open-air is graded: only each receiver's treble shelf fades with `atr_open_air` (effect curves on
+      `CAkFxBase`, exclusive and absolute), the output evens the loudness and adds 3 dB; the per-object `BypassFX`
+      switch and the muscle RoomVerb bypass are gone.
     - [New] Broken glass makes a car open-air: each pane of `vehicle::BaseObject +0x600` -> data -> `+0x298`
       (count `+0x2a4`, stride 0x30) and the windshield `+0x2a8` asked `game::VehicleDestruction::Glass::IsShattered`
       (`0x273094`); the offsets are checked against the bytes of `OnGlassDestruction` and the save code first.

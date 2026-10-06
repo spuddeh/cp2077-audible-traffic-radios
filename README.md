@@ -9,7 +9,7 @@ game's own car radio sound.
   radio is tuned but its station never plays.
 - **Other radios keep playing while your car radio is on.** The game otherwise silences every station your own
   car radio is not tuned to: traffic, world radios and street music.
-- **Each car has its own level.** Traffic radios play between +0 and +12 dB over the game's own car radio level,
+- **Each car has its own level.** Traffic radios play between +0 and +9 dB over the game's own car radio level,
   most near the middle and a few quiet or loud. A car keeps its level whenever its radio restarts.
 - **Muffled from inside a car.** In first person in a car, traffic radios are muffled the way the game already
   muffles traffic noise (-4 dB and a low-pass filter). Third person, or broken glass, lets more through.

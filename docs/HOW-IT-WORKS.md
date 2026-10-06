@@ -53,8 +53,8 @@ like mode 0. The cold block is found through the predicate's `jne`, not by addre
 
 ### A level per car
 
-The NPC mixer is set to the top of a range (+12 dB) and each traffic radio voice is lowered by its own share of
-it (0 to 12 dB):
+The NPC mixer is set to the top of a range (+9 dB) and each traffic radio voice is lowered by its own share of
+it (0 to 9 dB):
 
 - **Per voice, not per game object.** `veh_engage_moving_faster` is set through
   `AK::SoundEngine::SetRTPCValueByPlayingID` (`0x1acf6a0`; it looks up the voice's game object at `0x1ae8dc0` and

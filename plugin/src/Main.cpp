@@ -196,7 +196,7 @@ constexpr float kVanillaVolume = -8.0f;
 
 // The range a car's radio plays in, in dB on the mixer. The mixer is set to the top; each voice is lowered from
 // there by its own share of the range.
-float g_levelTop = 12.0f;
+float g_levelTop = 9.0f;
 float g_levelBottom = 0.0f;
 
 // From inside a car: how far the mixer drops (dB) and how much low-pass it gets (0 to 100), at full veh_interior.
