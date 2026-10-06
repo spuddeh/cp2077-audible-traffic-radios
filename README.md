@@ -5,18 +5,24 @@ game's own car radio sound.
 
 ## What it changes
 
-Two things in the game's own radio, nothing else:
-
-- A station that only traffic cars are tuned to plays. Without this, a traffic car's radio is tuned but its
-  station never plays, so the car stays silent.
-- The NPC car radio mixer plays 26 dB louder (-8 dB to +18 dB), set on the loaded sound data in memory. No
-  sound bank is shipped or replaced.
+- **Traffic radios play.** A station that only traffic cars are tuned to plays. Without this, a traffic car's
+  radio is tuned but its station never plays.
+- **Other radios keep playing while your car radio is on.** The game otherwise silences every station your own
+  car radio is not tuned to: traffic, world radios and street music.
+- **Each car has its own level.** Traffic radios play between +0 and +12 dB over the game's own car radio level,
+  most near the middle and a few quiet or loud. A car keeps its level whenever its radio restarts.
+- **Muffled from inside a car.** In first person in a car, traffic radios are muffled the way the game already
+  muffles traffic noise (-4 dB and a low-pass filter). Third person, or broken glass, lets more through.
 
 What you hear is the game's own car radio sound: each car class's own filtering, so it sounds like music from
-inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m.
+inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m. Combat and police
+music still silence traffic radios, and dialogue still lowers them, as in the base game.
 
-Every address is verified before it is used, and the mixer value is only changed when it still holds the game's
-own -8 dB. On any other game build the plugin logs a line and changes nothing.
+No sound bank is shipped or replaced: the changes are made to the sound data the game has loaded. Every address is
+verified before it is used, and on any other game build the plugin logs a line and changes nothing.
+
+**How it works, for modders:** [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) - the game's radio gate, the mix,
+and the Wwise techniques (editing loaded objects in memory, per-voice parameters, the audio lock).
 
 ## Install
 
@@ -25,7 +31,14 @@ Requires [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380).
 
 ## Build
 
-See `plugin/CMakeLists.txt`. RED4ext.SDK is header-only; point the include path at a checkout.
+```powershell
+cmake -S plugin -B plugin\build -G "Visual Studio 17 2022" -A x64
+cmake --build plugin\build --config Release
+```
+
+RED4ext.SDK is header-only; `plugin/CMakeLists.txt` points the include path at a checkout. Configure with
+`-DATR_TUNE=ON` for the tuning build, which reads `atr_tune.txt` beside the DLL and logs its own per-frame cost.
+It is for development only.
 
 ## License
 
