@@ -693,9 +693,110 @@ void OpenAir()
 #endif
 
 #ifdef ATR_TUNE
+// --- 7. occlusion test (tuning build only) ---
+// The NPC receivers and their mixer read no occlusion parameter, so walls do not stop them; the world radio
+// (radio_default_int) reads game_occlusion. `occlude 1` attaches the world radio's two game_occlusion curves to the
+// NPC mixer once: volume 0 to -12 dB and low-pass 0 to 57. The attach is the parameter node's own virtual at slot
+// 0x1c0 (0x1adda50), the one a bank load calls for every RTPC: (object start, curve description, points), 1 on
+// success. The description is {u8 type, u8 accumulation, u8 scaling, pad, u32 rtpc, u32 parameter, u32 curve id,
+// u32 point count}; a point is {float from, float to, u32 interpolation}. Neither curve can be removed again.
+// Every 10 s the log also reports the highest game_occlusion on a playing traffic radio's game object.
+constexpr uint32_t kRtpcGameOcclusion = 154512849;
+struct AkCurveDesc
+{
+    uint8_t type;
+    uint8_t accumulation;
+    uint8_t scaling;
+    uint8_t pad;
+    uint32_t rtpc;
+    uint32_t parameter;
+    uint32_t curve;
+    uint32_t count;
+};
+struct AkCurvePoint
+{
+    float from;
+    float to;
+    uint32_t interpolation;
+};
+using AkAttachRtpcFn = int (*)(uintptr_t aObject, const AkCurveDesc* aDesc, const AkCurvePoint* aPoints);
+
+int g_occlude = 0;
+bool g_occluded = false;
+
+int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDesc, const AkCurvePoint* aPoints)
+{
+    __try
+    {
+        return aAttach(aObject, &aDesc, aPoints);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
+
+void Occlude()
+{
+    static const auto attach =
+        AtRva<AkAttachRtpcFn>(0x1adda50, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10});
+    static const auto lock = WwiseLock();
+    if (!g_occlude || g_occluded)
+    {
+        return;
+    }
+    if (!attach || !lock)
+    {
+        g_occluded = true;
+        Log("occlude: the attach is not this game build's - nothing attached");
+        return;
+    }
+    if (!TryEnterCriticalSection(lock))
+    {
+        return;
+    }
+    // The world radio's own curves (radio.bnk, sound 161720350), with curve ids of this plugin's.
+    static const AkCurvePoint volume[] = {{0.0f, 0.0f, kCurveLinear}, {1.0f, -0.7488113641738892f, kCurveLinear}};
+    static const AkCurvePoint lowPass[] = {{0.0f, 0.0f, kCurveLinear}, {1.0f, 57.0f, kCurveLinear}};
+    const AkCurveDesc volumeDesc{0, 2, 2, 0, kRtpcGameOcclusion, kPropVolume, 0xA7700001, 2};  // additive, dB
+    const AkCurveDesc lowPassDesc{0, 6, 0, 0, kRtpcGameOcclusion, kPropLpf, 0xA7700002, 2};    // filter
+    const uintptr_t mixer = SafeFindObject(kNpcRadioMixer);
+    const int a = mixer ? SafeAttach(attach, mixer, volumeDesc, volume) : 0;
+    const int b = mixer ? SafeAttach(attach, mixer, lowPassDesc, lowPass) : 0;
+    LeaveCriticalSection(lock);
+    g_occluded = true;
+    Log("occlude: game_occlusion attached to the NPC mixer - volume " + std::to_string(a) + ", low-pass " +
+        std::to_string(b) + " (1 = done)");
+}
+
+// The highest game_occlusion on a live traffic radio's game object, or -1. Called under Wwise's lock.
+float SafeMaxOcclusion(AkGetRtpcValueFn aGet, AkGameObjectFn aGameObject)
+{
+    float best = -1.0f;
+    for (const auto& entry : g_voiceReceiver)
+    {
+        __try
+        {
+            const uint64_t object = aGameObject(entry.first);
+            float value = 0.0f;
+            int scope = 2;  // RTPCValue_GameObject
+            if (object != ~0ull && aGet(kRtpcGameOcclusion, object, 0, &value, &scope) == 1)
+            {
+                best = std::fmax(best, value);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+        }
+    }
+    return best;
+}
+#endif
+
+#ifdef ATR_TUNE
 // Tuning build only: atr_tune.txt beside the DLL, read every 2 s. Lines `levels <bottom dB> <top dB>` and
 // `muffle <dB> <low-pass>`. A change writes the mixer again on the next frame; a levels change also levels every
-// live voice again. `open <0|1>` switches the open-air test.
+// live voice again. `open <0|1>` switches the open-air test; `occlude 1` attaches the occlusion curves.
 void ReadTuning()
 {
     static uint64_t next = 0;
@@ -719,14 +820,21 @@ void ReadTuning()
     }
     float bottom = g_levelBottom, top = g_levelTop, muffleDb = g_muffleDb, muffleLpf = g_muffleLpf;
     int open = g_open;
+    int occlude = g_occlude;
     char text[128];
     while (std::fgets(text, sizeof(text), f))
     {
         std::sscanf(text, " levels %f %f", &bottom, &top);
         std::sscanf(text, " muffle %f %f", &muffleDb, &muffleLpf);
         std::sscanf(text, " open %d", &open);
+        std::sscanf(text, " occlude %d", &occlude);
     }
     std::fclose(f);
+    if (occlude != g_occlude)
+    {
+        g_occlude = occlude;
+        Log(occlude ? "tune: occlusion test on" : "tune: occlusion test off (attached curves stay until a restart)");
+    }
     if (open != g_open)
     {
         g_open = open;
@@ -780,6 +888,7 @@ void TimedLevelVoices()
     LevelVoices();
     Muffle();
     OpenAir();
+    Occlude();
     QueryPerformanceCounter(&b);
     const double us = static_cast<double>(b.QuadPart - a.QuadPart) * toMicros;
     ++g_cost.scans;
@@ -798,6 +907,16 @@ void TimedLevelVoices()
                       static_cast<unsigned long long>(g_cost.scans), g_cost.total / g_cost.scans, g_cost.worst,
                       g_cost.voices);
         Log(line);
+        static const auto get = AtRva<AkGetRtpcValueFn>(0x1ad2c60, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C});
+        static const auto gameObject = AtRva<AkGameObjectFn>(0x1ad2680, {0x8B, 0xD1, 0x48, 0x8B, 0x0D});
+        static const auto lock = WwiseLock();
+        if (get && gameObject && lock && !g_voiceReceiver.empty() && TryEnterCriticalSection(lock))
+        {
+            const float occlusion = SafeMaxOcclusion(get, gameObject);
+            LeaveCriticalSection(lock);
+            std::snprintf(line, sizeof(line), "occlusion: highest game_occlusion on a traffic radio %.2f", occlusion);
+            Log(line);
+        }
     }
     g_cost = ScanCost{};
     g_cost.next = now + 10000;
