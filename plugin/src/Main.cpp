@@ -184,8 +184,9 @@ float g_levelTop = 12.0f;
 float g_levelBottom = 0.0f;
 
 // From inside a car: how far the mixer drops (dB) and how much low-pass it gets (0 to 100), at full veh_interior.
-float g_muffleDb = -6.0f;
-float g_muffleLpf = 40.0f;
+// The game's own values for traffic engines, tyres and horns (init.bnk, veh_interior at 1).
+float g_muffleDb = -4.0f;
+float g_muffleLpf = 25.0f;
 // The mixer volume this plugin last wrote, which a later write must find there.
 float g_mixerNow = std::numeric_limits<float>::quiet_NaN();
 
