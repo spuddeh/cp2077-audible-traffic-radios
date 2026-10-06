@@ -15,6 +15,7 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 | Muffled from inside a car | Expanded | `veh_interior` and vanilla's traffic-noise values (-4 dB, low-pass 25) |
 | Muffled by walls | Expanded | the world radio's own `game_occlusion` curves |
 | Open-air cars, graded | Expanded | each car class's EQ (only its treble shelf moves) and the doors, windows and glass the game tracks |
+| Through fights and a wanted level | Expanded | combat and police music's own duck on the traffic radio bus, set to 0 |
 | Growl FM, Impulse, Dark Star, Royal Blue on themed traffic lists | Expanded | the stations and the list mechanism; the theming follows vanilla's (Delamain, Villefort) |
 
 ## Implemented
@@ -43,6 +44,8 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
     so every open car type is 3 dB louder and the balance between types holds.
 - [x] Muffled by walls: the world radio's two `game_occlusion` curves (volume 0 to -12 dB, low-pass 0 to 57)
   attached to the NPC mixer once at load (`SetRTPC` virtual, `0x1adda50`).
+- [x] Through fights and a wanted level: the -96 dB duck that combat and police music put on the NPC radio bus is
+  set to 0 on both ducking buses (`+0x110` list, entry target `+0x08`, volume `+0x0c`). Not yet verified in game.
 - [x] Every address and byte is verified before use; on any other game build the plugin logs and does nothing.
 - [x] Tuning build (`ATR_TUNE`): `atr_tune.txt` (`levels`, `muffle`, `open 1` for every car fully open,
   `weights <window> <door> <torn-off> <pane>`) applied live; every 10 s a `perf:`, `cars:` and `playing:` line

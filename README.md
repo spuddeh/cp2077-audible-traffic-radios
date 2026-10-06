@@ -23,6 +23,8 @@ Some of this is the game's own and only held back; some is new.
 - **Muffled from inside a car.** In first person in a car, traffic radios are muffled the way the game already
   muffles traffic noise (-4 dB and a low-pass filter). Third person, or broken glass, lets more through.
 - **Muffled by walls.** Walls muffle traffic radios the way they muffle the game's other radios.
+- **Traffic radios keep playing through fights and a wanted level.** The game silences them while combat or
+  police music plays; your own radio still follows the game's rules (or RadioXL's switches).
 - **Open cars sound open.** A car with a door open or torn off, a window down or broken, or no roof, sounds less
   muffled and a little louder the more of it is open. Each car class keeps its own sound.
 - **More stations on traffic.** Growl FM, Impulse, Dark Star and Royal Blue Radio, which no traffic car plays in
@@ -30,9 +32,8 @@ Some of this is the game's own and only held back; some is new.
   cars, Royal Blue Radio on executive cars and limousines.
 
 What you hear is the game's own car radio sound: each car class's own filtering, so it sounds like music from
-inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m. Police music still
-silences traffic radios, as in the base game; the game's combat music is set to do the same, and dialogue to
-lower them. A car that has left traffic (one you get out of, or one hit, fleeing or abandoned) keeps the closed
+inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m. Dialogue is
+set to lower them, as in the base game. A car that has left traffic (one you get out of, or one hit, fleeing or abandoned) keeps the closed
 sound with its doors open, and its level is picked again as it leaves traffic.
 
 No sound bank is shipped or replaced: the changes are made to the sound data the game has loaded. Every address is

@@ -115,6 +115,14 @@ and nomad variants, Royal Blue on the executive cars and limousines. Samizdat st
 Six lists spell Morro Rock `radio_station 01_att_rock`, which names no station; they are corrected. A list edited
 after load is the one traffic picks from.
 
+### Through fights and a wanted level
+
+`init.bnk` ducks `Music_Diagetic_Radios_Vehicle_NPC` (194813043) by -96 dB while `Music_Systemic_Combat` or
+`Music_Systemic_Police` plays, which outweighs the boost. Each ducking bus keeps its duck list at `+0x110` (count
+`+0x134`); an entry holds its target bus at `+0x08`, its volume at `+0x0c` and its property at `+0x1c`. The plugin
+sets the NPC bus's entry on both to 0 dB, once, under a tried Wwise lock, only over -96. The same buses' entries
+on the player radio bus are not touched, so the player's radio follows the game, or RadioXL's switches.
+
 ## 3. Editing loaded Wwise objects in memory
 
 No sound bank is shipped. The mixer is changed on the object Wwise already loaded:
@@ -175,8 +183,7 @@ produced one wrong conclusion during development.
 
 ## 5. What the game does that this plugin leaves alone
 
-- Police music silences the NPC radio bus (`init.bnk` ducks it by -96 dB, which outweighs the boost; measured with
-  the bus meters). Combat music carries the same duck in `init.bnk`; not checked in game.
+- The quest-driven ducks on the NPC radio bus (`Music_Quest_Muting_Radios_Guns_DVR`) stay the game's.
 - Important and gameplay dialogue are set to lower the radio buses through RTPC sidechains (read from `init.bnk`).
 - A car that has left traffic (kind 3: one the player gets out of, or one hit, fleeing or abandoned) has no entity
   id on its emitter, so it stays closed for the open-air fade and its level is keyed on the voice.

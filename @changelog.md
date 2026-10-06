@@ -1,5 +1,13 @@
 # Changelog - Audible Traffic Radios
 
+### [2026-10-07] Session
+- **[AudibleTrafficRadios] [Ducks.cpp] v0.1.0**:
+    - [New] Combat and police music no longer duck traffic radios: the duck entries on `Music_Systemic_Combat`
+      (2791646749) and `Music_Systemic_Police` (318512183) aimed at `Music_Diagetic_Radios_Vehicle_NPC`
+      (194813043) are set from -96 to 0 dB, once, under a tried Wwise lock, guarded on target, property 0 and
+      value. The player radio bus's entries on the same buses and the quest ducks are not touched. Built; not yet
+      verified in game.
+
 ### [2026-10-06] Session
 - **[AudibleTrafficRadios] [Main.cpp] v0.1.0** (open-air cars and occlusion):
     - [Change] The level range tops out at +9 dB (was +12): some cars sounded too loud.

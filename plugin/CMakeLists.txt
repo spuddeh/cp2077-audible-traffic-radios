@@ -4,7 +4,7 @@ project(AudibleTrafficRadios LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_library(AudibleTrafficRadios SHARED src/Main.cpp src/Wwise.cpp src/Patches.cpp src/Levels.cpp src/Muffling.cpp src/OpenAir.cpp src/Stations.cpp src/Tuning.cpp)
+add_library(AudibleTrafficRadios SHARED src/Main.cpp src/Wwise.cpp src/Patches.cpp src/Levels.cpp src/Muffling.cpp src/OpenAir.cpp src/Stations.cpp src/Ducks.cpp src/Tuning.cpp)
 
 # RED4ext.SDK is header-only and lives in the read-only reference mirror. It is included, never
 # built from there: nothing may write into _source.

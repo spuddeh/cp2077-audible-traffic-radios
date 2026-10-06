@@ -9,3 +9,4 @@
   more of it is open, the less muffled and the louder it is, keeping its own car-class sound. It goes back to the
   muffled sound when it closes up.
 - Walls muffle traffic radios the way they muffle the game's other radios.
+- Traffic radios keep playing through fights and a wanted level.

@@ -146,6 +146,7 @@ void OpenAir();                                                                 
 float OpennessOf(const LiveVoice& aVoice);                                       // OpenAir.cpp
 std::pair<int, int> AttachEqFades();                                             // OpenAir.cpp
 void ThemeStations();                                                            // Stations.cpp
+bool LiftDucks();                                                                // Ducks.cpp
 #ifdef ATR_TUNE
 void WriteOverlay();                                                             // OpenAir.cpp
 void ReadTuning();                                                               // Tuning.cpp
