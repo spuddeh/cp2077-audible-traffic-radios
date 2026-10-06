@@ -1,6 +1,19 @@
 # Changelog - Audible Traffic Radios
 
 ### [2026-10-06] Session
+- **[AudibleTrafficRadios] [Main.cpp] v0.1.0** (open-air cars and occlusion):
+    - [New] Open-air traffic cars: every 250 ms each car with a radio voice is read through RTTI
+      (`ScriptGameInstance.FindEntityByID` on the emitter's entity id `+0x138`, `GetVehiclePS`, `GetDoorState` /
+      `GetWindowState` for seat doors 0 to 3; `GetRecordID` then the `hasSideWindows` and `player_audio_resource`
+      flats once per car). An open car's receiver sound gets its effect slots 0 and 1 bypassed for its Wwise game
+      object only through `CAkParameterNodeBase::BypassFX` (`0x1ade2b0`: node, slot, bypass, `CAkRegisteredObj*`
+      from `CAkRegistryMgr::GetObj` `0x1b3b230`, fromReset); the lock is tried only when a voice's game object is
+      unknown or its car changed state, and entries for gone game objects are swept every 5 s.
+    - [New] Occlusion: the world radio's `game_occlusion` curves (volume additive dB 0 to -0.7488, low-pass filter
+      0 to 57) attached to the NPC mixer through the parameter node's `SetRTPC` virtual (`0x1adda50`) once,
+      beside the volume write.
+    - [New] Voices carry their receiver index and whether their key is a car.
+    - [New] `ATR_TUNE`: `open 1` treats every car as open-air; a `cars:` line every 10 s.
 - **[AudibleTrafficRadios] [Main.cpp] v0.1.0**:
     - [New] Radio mode 2 patch: the station predicate's cold branch (`sete al` -> `xor al, al; nop`, found through
       the `jne` at `+0xab`) plays a station with no player receiver while the player's car radio is on.
