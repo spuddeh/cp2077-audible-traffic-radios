@@ -590,17 +590,11 @@ void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
 // that left traffic (kind 3) has no entity id and stays closed.
 //
 // Openness is atr_open_air, a game parameter of this plugin's set on the car's Wwise game object, and the receiver
-// EQs fade with it (section 8): at 1 every band is flat and a car sounds like its own speakers through the opening.
-// The muscle receiver's RoomVerb has no fade and is bypassed for that game object from 0.5 up, through
-// CAkParameterNodeBase::BypassFX (0x1ade2b0: node, effect slot, bypass, CAkRegisteredObj*, fromReset).
+// EQs' treble shelves fade with it (section 8): the closed body's muffling lifts, the car's own sound stays.
 constexpr uint32_t kNpcReceiverSounds[] = {882536694, 381815666, 234614324, 924785061,
                                            329334756, 937325872, 686441992};  // kNpcReceivers' sounds, in order
 constexpr uint32_t kRtpcOpenAir = 1698419250;  // atr_open_air
-constexpr int kMuscleReceiver = 1;              // its RoomVerb is effect slot 0
-constexpr uint32_t kRoomVerbSlot = 0;
-constexpr float kRoomVerbOffAt = 0.5f;
 constexpr int kSeatDoors = 4;         // EVehicleDoor seat_front_left .. seat_back_right
-using AkBypassFxFn = void (*)(uintptr_t aNode, uint32_t aSlot, bool aBypass, uintptr_t aObject, bool aFromReset);
 using AkGetObjFn = uintptr_t (*)(uintptr_t aRegistry, uint64_t aGameObject);
 using AkGameObjectFn = uint64_t (*)(uint32_t aPlayingId);
 using AkSetRtpcFn = int (*)(uint32_t aRtpc, float aValue, uint64_t aGameObject, int32_t aMs, int aCurve,
@@ -625,9 +619,8 @@ struct Car
 };
 std::unordered_map<uint64_t, Car> g_cars;  // by entity id
 
-// The openness this plugin set, by game object, and the muscle RoomVerb bypass, by game object.
+// The openness this plugin set, by game object.
 std::unordered_map<uint64_t, float> g_openSet;
-std::unordered_map<uint64_t, bool> g_roomVerbOff;
 
 struct CarRtti
 {
@@ -887,26 +880,6 @@ bool Differs(const std::unordered_map<uint64_t, float>& aSet, uint64_t aGameObje
     return have == aSet.end() ? aValue > 0.0f : std::fabs(have->second - aValue) > 0.01f;
 }
 
-bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uintptr_t aRegistry, uint64_t aGameObject, uint32_t aSound,
-                uint32_t aSlot, bool aOn)
-{
-    __try
-    {
-        const uintptr_t node = SafeFindObject(aSound);
-        const uintptr_t object = aRegistry ? aGetObj(aRegistry, aGameObject) : 0;
-        if (!node || !object)
-        {
-            return false;
-        }
-        aBypass(node, aSlot, aOn, object, false);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
-}
-
 int SafeSetRtpc(AkSetRtpcFn aSet, uint32_t aRtpc, float aValue, uint64_t aGameObject)
 {
     __try
@@ -946,8 +919,6 @@ bool SafeObjectGone(AkGetObjFn aGetObj, uintptr_t aRegistry, uint64_t aGameObjec
 // Every frame: Wwise's lock is tried only when a voice's game object is unknown or its car's openness changed.
 void OpenAir()
 {
-    static const auto bypass =
-        AtRva<AkBypassFxFn>(0x1ade2b0, {0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x6C, 0x24, 0x20});
     static const auto getObj =
         AtRva<AkGetObjFn>(0x1b3b230, {0x44, 0x8B, 0x41, 0x30, 0x4C, 0x8B, 0xCA, 0x45, 0x85, 0xC0});
     static const auto gameObject = AtRva<AkGameObjectFn>(0x1ad2680, {0x8B, 0xD1, 0x48, 0x8B, 0x0D});
@@ -960,7 +931,7 @@ void OpenAir()
     {
         return;
     }
-    if (!bypass || !getObj || !gameObject || !setRtpc || !lock)
+    if (!getObj || !gameObject || !setRtpc || !lock)
     {
         stopped = true;
         Log("open-air cars: the Wwise calls are not this game build's - every car stays closed");
@@ -975,11 +946,7 @@ void OpenAir()
         {
             break;
         }
-        const float open = OpennessOf(voice);
-        const auto off = g_roomVerbOff.find(voice.gameObject);
-        pending = voice.gameObject == ~0ull || Differs(g_openSet, voice.gameObject, open) ||
-                  (voice.receiver == kMuscleReceiver &&
-                   (open >= kRoomVerbOffAt) != (off != g_roomVerbOff.end() && off->second));
+        pending = voice.gameObject == ~0ull || Differs(g_openSet, voice.gameObject, OpennessOf(voice));
     }
     if (!pending || !TryEnterCriticalSection(lock))
     {
@@ -1004,25 +971,14 @@ void OpenAir()
         {
             g_openSet[voice.gameObject] = open;
         }
-        if (voice.receiver == kMuscleReceiver)
-        {
-            const bool want = open >= kRoomVerbOffAt;
-            auto& have = g_roomVerbOff[voice.gameObject];
-            if (have != want && SafeBypass(bypass, getObj, registry, voice.gameObject,
-                                           kNpcReceiverSounds[kMuscleReceiver], kRoomVerbSlot, want))
-            {
-                have = want;
-            }
-        }
     }
     if (sweep)
     {
-        // A game object that is gone takes its parameter value and bypass with it.
+        // A game object that is gone takes its parameter value with it.
         const auto gone = [&](uint64_t aObject) {
             return !live.contains(aObject) && SafeObjectGone(getObj, registry, aObject);
         };
         std::erase_if(g_openSet, [&](const auto& aEntry) { return gone(aEntry.first); });
-        std::erase_if(g_roomVerbOff, [&](const auto& aEntry) { return gone(aEntry.first); });
         nextSweep = now + 5000;
     }
     LeaveCriticalSection(lock);
@@ -1066,9 +1022,10 @@ int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDe
 }
 
 // --- 8. the receiver EQs fade with openness ---
-// Each NPC receiver's Parametric EQ gets curves on atr_open_air that lift what the closed body takes away: at 1
-// every band that cuts is at 0 dB and every notch narrowed to Q 30, while the boosts (the speakers' and cabin's bass)
-// stay, and the output level drops by its makeup gain plus what the lift adds in loudness (pink noise, K-weighted).
+// Each NPC receiver's Parametric EQ mixes the car's own sound (its bass and mid bands) with the closed body (its
+// treble shelf). Opening lifts only the treble shelf, to 0 dB at 1, so each car keeps CDPR's character for it; the
+// output level takes off what the lift adds in loudness (pink noise, K-weighted) and adds kOpenRise, the same for
+// every receiver, so the receivers keep their balance.
 // An effect parameter takes the curve's value in place of its own setting (measured through SetParam: a closed
 // car's band 3 gain arrived as 0, not -20), and a curve marked dB is converted again on the way. So every curve is
 // exclusive with no scaling and carries the absolute value: the EQ's own setting at 0, the open value at 1, five
@@ -1085,19 +1042,19 @@ struct EqFade
     float q[3];
     bool on[3];
     float output;
-    float louder;  // dB the lift adds in loudness, taken off the output level
+    float louder;  // dB the treble lift adds in loudness, taken off the output level
 };
 constexpr EqFade kEqFades[] = {
-    {828314749, {4, 3, 5}, {-5.5f, -24.0f, -24.0f}, {1.0f, 0.5f, 1.0f}, {true, true, true}, 4.0f, 4.3f},  // lowend
-    {600002266, {4, 6, 5}, {6.5f, 6.0f, -24.0f}, {1.0f, 0.5f, 0.5f}, {true, true, true}, 3.0f, 2.9f},     // muscle
-    {145669955, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 0.0f, 2.9f},     // sports
-    {869899093, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 0.9f},     // suv
-    {735462065, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 0.9f},     // truck
-    {947417206, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 0.9f},     // hyper
-    {364560772, {4, 6, 5}, {-24.0f, 0.0f, -24.0f}, {1.0f, 1.0f, 1.0f}, {true, false, true}, 0.0f, 2.3f},  // police
+    {828314749, {4, 3, 5}, {-5.5f, -24.0f, -24.0f}, {1.0f, 0.5f, 1.0f}, {true, true, true}, 4.0f, 6.9f},  // lowend
+    {600002266, {4, 6, 5}, {6.5f, 6.0f, -24.0f}, {1.0f, 0.5f, 0.5f}, {true, true, true}, 3.0f, 5.9f},     // muscle
+    {145669955, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 0.0f, 2.4f},     // sports
+    {869899093, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 2.4f},     // suv
+    {735462065, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 2.4f},     // truck
+    {947417206, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 2.4f},     // hyper
+    {364560772, {4, 6, 5}, {-24.0f, 0.0f, -24.0f}, {1.0f, 1.0f, 1.0f}, {true, false, true}, 0.0f, 1.0f},  // police
 };
-constexpr uint8_t kNotch = 3;
-constexpr float kOpenNotchQ = 30.0f;
+constexpr uint8_t kHighShelf = 5;
+constexpr float kOpenRise = 3.0f;  // dB an open car gains over a closed one
 constexpr uint32_t kFadePoints = 5;
 using AkFxAttachRtpcFn = int (*)(uintptr_t aFx, const AkCurveDesc* aDesc, const AkCurvePoint* aPoints);
 
@@ -1166,24 +1123,12 @@ std::pair<int, int> AttachEqFades()
         const auto from = [](float aClosed, float aOpen) { return [=](float aT) { return aClosed + (aOpen - aClosed) * aT; }; };
         for (uint32_t band = 0; band < 3; ++band)
         {
-            if (!eq.on[band])
-            {
-                continue;
-            }
-            if (eq.type[band] == kNotch)
-            {
-                const float q = eq.q[band];
-                add(band * 5 + 3, 1, 0, [q](float aT) { return q * std::pow(kOpenNotchQ / q, aT); });
-            }
-            else if (eq.gain[band] < 0.0f)
+            if (eq.on[band] && eq.type[band] == kHighShelf)
             {
                 add(band * 5 + 1, 1, 0, from(eq.gain[band], 0.0f));
             }
         }
-        if (eq.output != 0.0f || eq.louder != 0.0f)
-        {
-            add(15, 1, 0, from(eq.output, -eq.louder));
-        }
+        add(15, 1, 0, from(eq.output, eq.output - eq.louder + kOpenRise));
     }
     return {done, tried};
 }
