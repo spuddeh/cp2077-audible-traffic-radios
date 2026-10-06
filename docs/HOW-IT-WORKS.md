@@ -80,6 +80,41 @@ third person or on foot, and lowered by broken glass. Vanilla uses it to take tr
 low-pass of 25, but never touches radios. The plugin applies the same to the NPC mixer: volume
 `top + -4 dB x veh_interior`, low-pass `25 x veh_interior` (the actor-mixer low-pass is property id 2).
 
+### Muffled by walls
+
+The NPC receivers and their mixer read no occlusion parameter, so walls never stopped them; the world radio
+receiver (`radio_default_int`) reads `game_occlusion`. The plugin gives the NPC mixer the world radio's own two
+curves on `game_occlusion` (volume 0 to -12 dB, low-pass 0 to 57), attached once at load (section 3).
+
+### Open-air cars
+
+Each traffic car with a radio gets an **openness** from 0 to 1, read every 250 ms through RTTI: 0.25 per window
+down (`GetWindowState`), 0.5 per seat door open and 0.75 per door torn off (`GetDoorState`, seats 0 to 3), 0.25
+per shattered pane, and 1 for a car with no side windows (the record's `hasSideWindows` false, or a `targa` /
+`cabrio` `player_audio_resource`). The car is reached from the emitter's entity id with
+`ScriptGameInstance.FindEntityByID`. Glass has no script-readable state: each pane of the car's
+`game::VehicleDestruction` (`vehicle::BaseObject +0x600`, then its data: panes at `+0x298`, count `+0x2a4`, 0x30
+bytes each, windshield at `+0x2a8`) is asked `Glass::IsShattered` (`0x273094`), the call the save code uses. The
+saved `brokenGlass` mask is only written when the car is saved.
+
+Openness is a game parameter of the plugin's own (`atr_open_air`) set on the car's Wwise game object with a 250 ms
+glide. Each receiver's EQ is CDPR's sound for that car class: bass and mid bands for the speakers and cabin, a
+treble shelf for the closed body. Only the **treble shelf** fades with openness, to 0 dB at 1, so a car keeps its
+class's character. The EQ's output takes off the loudness the lift adds (pink noise, K-weighted: 6.9 dB low-end,
+5.9 muscle, 2.4 sports/SUV/truck/hyper, 1.0 police) and adds 3 dB, so every open car type is 3 dB louder than
+closed and the balance between types holds.
+
+### Stations on traffic cars
+
+A traffic car picks from its sound set's `matchingStartupRadioStations` (`audioVehicleMetadata` in
+`base\sound\metadata\cooked_metadata.audio_metadata`, 176 sets, none in ep1's). 152 sets share nine stations; Growl
+FM, Impulse, Dark Star and Samizdat are on none, and Royal Blue only on Delamain. The plugin edits the loaded lists
+once (`ResourceLoader::FindToken`, then the `entries` through RTTI), the way the game themes Delamain and the
+Villefort executives: Growl FM on the shared lists, Impulse on the sports and hyper cars, Dark Star on the gang
+and nomad variants, Royal Blue on the executive cars and limousines. Samizdat stays off, as world radios skip it.
+Six lists spell Morro Rock `radio_station 01_att_rock`, which names no station; they are corrected. A list edited
+after load is the one traffic picks from.
+
 ## 3. Editing loaded Wwise objects in memory
 
 No sound bank is shipped. The mixer is changed on the object Wwise already loaded:
@@ -93,6 +128,24 @@ No sound bank is shipped. The mixer is changed on the object Wwise already loade
 - **The setter.** `CAkParameterNode::SetAkProp(object, prop, value, min, max)` (`0x1b07990`), Wwise's own
   live-editing setter, called on the object start. The plugin writes only over the value it expects (the vanilla
   -8 dB, or its own last write).
+
+### Giving a loaded object a game parameter it never had
+
+A bank load attaches each RTPC curve through the object's own setter, and those setters still work after load:
+
+- **Nodes** (sounds, actor mixers, buses): the parameter node's `SetRTPC` virtual (vtable slot `0x1c0`,
+  `0x1adda50`): `(object start, desc, points)`, 1 on success. `desc` is `{u8 type, u8 accumulation, u8 scaling,
+  pad, u32 rtpc, u32 parameter, u32 curve id, u32 count}`, a point `{float from, float to, u32 interpolation}`.
+  Copy type, accumulation and scaling from a vanilla curve doing the same job; a volume point with dB scaling is
+  stored as amplitude - 1 (`-0.7488` is -12 dB). This is how the walls work.
+- **Effects:** `CAkFxBase`'s own `SetRTPC` (`0x1b50b20`), same arguments, which also reaches effect instances
+  already playing. Effects are `g_pIndex` table 9, the indexed pointer being the object (`CAkFxCustom` vtable
+  `0x2f75ac0`). Two traps, both measured with a hook on the Parametric EQ's `SetParam` (`0x1ab4640`): **the curve's
+  value replaces the parameter** rather than adding to it, and **a curve with dB scaling is converted again** on
+  the way. Write absolute values, exclusive accumulation, no scaling; then the parameter receives the curve value as
+  is. A curve's points blend in their stored form, so five or more keep a dB fade even.
+- **Parametric EQ parameter ids** (from `SetParam`'s switch): band `n` (0 to 2) is `n*5` + 0 type, 1 gain (dB,
+  clamped to ±24), 2 frequency, 3 Q, 4 on/off; 15 is the output gain.
 
 ### Never wait on Wwise's lock from the game thread
 
@@ -115,8 +168,10 @@ produced one wrong conclusion during development.
   on `Music_Systemic_Combat`, `_Police`, `Music_Diagetic_Radios_Vehicle_NPC` and `VO_Important_Somi_Holo`, and
   those three effect-less buses are why the engine's radio meters read 0.
 - **The tuning build** (CMake option `ATR_TUNE`) reads `atr_tune.txt` beside the DLL every 2 s
-  (`levels <bottom> <top>`, `muffle <dB> <low-pass>`) and logs its own per-frame cost every 10 s. It is never
-  released.
+  (`levels <bottom> <top>`, `muffle <dB> <low-pass>`, `open 1` for every car fully open, `weights <window> <door>
+  <torn-off> <pane>`), logs its per-frame cost by part every 10 s, each car's level and openness, and every gain,
+  Q and output the Parametric EQs receive. It is never released. Measured cost of the release features: 1.6 to 6
+  µs per frame with radios playing.
 
 ## 5. What the game does that this plugin leaves alone
 
