@@ -2,6 +2,9 @@
 
 ### [2026-10-06] Session
 - **[AudibleTrafficRadios] [Main.cpp] v0.1.0** (open-air cars and occlusion):
+    - [New] Broken glass makes a car open-air: each pane of `vehicle::BaseObject +0x600` -> data -> `+0x298`
+      (count `+0x2a4`, stride 0x30) and the windshield `+0x2a8` asked `game::VehicleDestruction::Glass::IsShattered`
+      (`0x273094`); the offsets are checked against the bytes of `OnGlassDestruction` and the save code first.
     - [New] Open-air traffic cars: every 250 ms each car with a radio voice is read through RTTI
       (`ScriptGameInstance.FindEntityByID` on the emitter's entity id `+0x138`, `GetVehiclePS`, `GetDoorState` /
       `GetWindowState` for seat doors 0 to 3; `GetRecordID` then the `hasSideWindows` and `player_audio_resource`

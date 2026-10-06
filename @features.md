@@ -14,7 +14,8 @@
   - [x] Every new voice levelled on the next frame; about 1 µs per frame measured.
 - [x] Muffled from inside a car: the mixer follows the game's `veh_interior` at vanilla's traffic-noise values
   (-4 dB, low-pass 25). Wwise's lock is tried, never waited on.
-- [x] Open-air traffic cars: a car with a seat door open or detached, a window down, or no side windows
+- [x] Open-air traffic cars: a car with a seat door open or detached, a window down, broken glass (any pane,
+  `Glass::IsShattered`, `0x273094`), or no side windows
   (`hasSideWindows` false, or a `targa`/`cabrio` `player_audio_resource`) plays without the receiver EQ, for that
   car's Wwise game object only (`BypassFX`, `0x1ade2b0`, effect slots 0 and 1); the EQ comes back when it closes.
   Doors and windows read through RTTI every 250 ms; kind 3 cars keep their EQ.
@@ -38,6 +39,8 @@
   no longer heard indoors; 0.00 to 0.90 on the street).
 - 2026-10-06: open-air cars: every car found as a vehicle (93 of 93 reads); a Thorton Galena switched clear when
   its driver's window and door were opened from the live bridge and back when closed, three door rounds in a row.
+- 2026-10-06: a Mizutani Shion went open on a shattered pane and stayed open; a Chevalier Emperor went open when
+  its front-left door was torn off (both from the live bridge, heard by the user).
 
 ## Pending checks
 - [ ] The muffling at vanilla's values, by ear.
