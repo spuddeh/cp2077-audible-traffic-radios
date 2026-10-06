@@ -1019,7 +1019,8 @@ int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDe
 // Each NPC receiver's Parametric EQ gets curves on atr_open_air that lift what the closed body takes away: at 1
 // every band that cuts is at 0 dB and every notch narrowed to Q 30, while the boosts (the speakers' and cabin's bass)
 // stay, and the output level drops by its makeup gain plus what the lift adds in loudness (pink noise, K-weighted).
-// A curve's points blend in amplitude, so each has five, even in dB (Q in ratio). The attach is CAkFxBase's own (0x1b50b20, the
+// An effect reads a dB curve's points as plain dB (unlike a node's volume curve, stored as amplitude - 1:
+// a +24 dB lift stored as 14.85 measured +15 dB), so the points are dB, five per curve (Q in ratio). The attach is CAkFxBase's own (0x1b50b20, the
 // one a bank load calls for an effect's RTPC): (effect, curve description, points), 1 on success, and it reaches
 // effect instances already playing. Effects sit in g_pIndex's table 9, the indexed pointer being the object (vtable
 // CAkFxCustom 0x2f75ac0). A Parametric EQ parameter is band * 5 + (0 type, 1 gain, 2 frequency, 3 Q, 4 on), and 15
@@ -1110,7 +1111,7 @@ std::pair<int, int> AttachEqFades()
             ++tried;
             done += fx && SafeFxAttach(attach, fx, desc, points) == 1 ? 1 : 0;
         };
-        const auto dbBy = [](float aDb) { return [aDb](float aT) { return std::pow(10.0f, aDb * aT / 20.0f) - 1.0f; }; };
+        const auto dbBy = [](float aDb) { return [aDb](float aT) { return aDb * aT; }; };
         for (uint32_t band = 0; band < 3; ++band)
         {
             if (!eq.on[band])
