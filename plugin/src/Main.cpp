@@ -1174,7 +1174,7 @@ void AttachOcclusion()
 // the way the game themes Delamain (jazz) or the Villefort executives (Pacific Dreams); Samizdat stays off every
 // list, as world radios skip it too. Six lists spell Morro Rock "radio_station 01_att_rock", which names no
 // station, and are corrected. Lists are edited in place once the metadata is loaded; a list edited after load is
-// the one traffic picks from. Police lists are left alone.
+// the one traffic picks from. Police lists get the spelling fix and no themed stations.
 constexpr const char* kSharedStations[] = {
     "radio_station_01_att_rock", "radio_station_02_aggro_ind",  "radio_station_03_elec_ind",
     "radio_station_04_hiphop",   "radio_station_05_pop",        "radio_station_07_aggro_techno",
@@ -1246,11 +1246,6 @@ void ThemeStations()
             }
             return false;
         };
-        if (holds(police))
-        {
-            continue;
-        }
-        ++lists;
         for (auto& s : list)
         {
             if (s == misspelt)
@@ -1259,6 +1254,11 @@ void ThemeStations()
                 ++fixed;
             }
         }
+        if (holds(police))
+        {
+            continue;
+        }
+        ++lists;
         bool shared = true;
         for (const auto* s : kSharedStations)
         {
