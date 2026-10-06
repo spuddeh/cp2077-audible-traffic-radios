@@ -14,12 +14,23 @@
 //      range. The receivers, their EQ, distance falloff and bus stay the game's.
 //   4. From inside a car in first person, the same mixer is turned down and low-passed, as the game already does
 //      for traffic engines but not for radios.
+//   5. A traffic car with a door open or torn off, a window down, or no side windows plays its radio without the
+//      receiver's EQ, for that car only.
+//   6. Walls muffle traffic radios: the NPC mixer gets the world radio's two occlusion curves.
 //
 // **Every address is verified before it is used, and a value is written only over the one expected.** On any
 // other game build the plugin logs a line and changes nothing.
 
 #include <Windows.h>
 #include <RED4ext/RED4ext.hpp>
+#include <RED4ext/CString.hpp>
+#include <RED4ext/GameEngine.hpp>
+#include <RED4ext/RTTISystem.hpp>
+#include <RED4ext/Scripting/IScriptable.hpp>
+#include <RED4ext/Scripting/Natives/ScriptGameInstance.hpp>
+#include <RED4ext/Scripting/Natives/entEntityID.hpp>
+#include <RED4ext/Scripting/Utils.hpp>
+#include <RED4ext/TweakDB.hpp>
 
 #include <cmath>
 #include <cstdint>
@@ -27,6 +38,9 @@
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
+#include <map>
+#include <set>
+#include <utility>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -311,10 +325,17 @@ using AkSetRtpcByPlayingIdFn = int (*)(uint32_t aRtpc, float aValue, uint32_t aP
 
 // Live NPC radio voices by playing id, with the round they were last seen in.
 std::unordered_map<uint32_t, uint32_t> g_levelled;
-#ifdef ATR_TUNE
-// Tuning build only: each live voice's receiver, for the open-air test.
-std::unordered_map<uint32_t, uint8_t> g_voiceReceiver;
-#endif
+
+// What the open-air cars need of each live voice: its car, receiver and Wwise game object (found later, under
+// Wwise's lock).
+struct LiveVoice
+{
+    uint64_t key;
+    uint8_t receiver;
+    bool car;  // the key is the car's entity id
+    uint64_t gameObject = ~0ull;
+};
+std::unordered_map<uint32_t, LiveVoice> g_voices;
 uint32_t g_round = 0;
 
 // The receiver's index in kNpcReceivers, or -1.
@@ -335,6 +356,7 @@ struct Voice
     uint32_t playingId;
     uint64_t key;      // the car's entity id, or the playing id
     uint8_t receiver;  // index in kNpcReceivers
+    bool car;          // the key is the car's entity id
 };
 
 bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut, uint32_t aMax, uint32_t* aCount)
@@ -379,7 +401,7 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut,
                         {
                             const uint64_t car =
                                 Read<uintptr_t>(emitter) == aTrafficVtbl ? Read<uint64_t>(emitter + 0x138) : 0;
-                            aOut[(*aCount)++] = Voice{id, car ? car : id, static_cast<uint8_t>(receiver)};
+                            aOut[(*aCount)++] = Voice{id, car ? car : id, static_cast<uint8_t>(receiver), car != 0};
                         }
                         break;
                     }
@@ -452,20 +474,16 @@ void LevelVoices()
     {
         auto [it, added] = g_levelled.try_emplace(voices[i].playingId, g_round);
         it->second = g_round;
-#ifdef ATR_TUNE
-        g_voiceReceiver[voices[i].playingId] = voices[i].receiver;
-#endif
         if (added)
         {
+            g_voices[voices[i].playingId] = LiveVoice{voices[i].key, voices[i].receiver, voices[i].car};
             // Bypass the parameter's own smoothing, which is built for a car's speed: the level applies at once.
             setRtpc(kRtpcEngageMovingFaster, CurveValueFor(span * (1.0f - ShareOf(voices[i].key))),
                     voices[i].playingId, 0, kCurveLinear, true);
         }
     }
     std::erase_if(g_levelled, [](const auto& aEntry) { return aEntry.second != g_round; });
-#ifdef ATR_TUNE
-    std::erase_if(g_voiceReceiver, [](const auto& aEntry) { return !g_levelled.contains(aEntry.first); });
-#endif
+    std::erase_if(g_voices, [](const auto& aEntry) { return !g_levelled.contains(aEntry.first); });
 }
 
 // --- 5. muffled from inside a car ---
@@ -554,38 +572,208 @@ void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
     }
 }
 
-#ifdef ATR_TUNE
-// --- 6. open-air test (tuning build only) ---
-// `open 1` in atr_tune.txt switches every traffic radio's receiver EQ off for that car's game object only; `open 0`
-// switches it back on. CAkParameterNodeBase::BypassFX (0x1ade2b0, the setter Wwise's Bypass Effect action uses)
-// takes (node, effect slot, bypass, CAkRegisteredObj*, fromReset), one slot per call. The object is the voice's game object
-// (Query::GetGameObjectFromPlayingID, 0x1ad2680) looked up with CAkRegistryMgr::GetObj (0x1b3b230, g_pRegistryMgr
-// at 0x339f7b0). Every other car playing the same receiver keeps its EQ. Runs under Wwise's lock, tried.
+// --- 6. open-air cars ---
+// A traffic car with a seat door open or torn off, a window down, or no side windows plays its radio without the
+// receiver's EQ: its own speakers, heard through the opening. Every 250 ms each car with a radio voice is read
+// through RTTI (ScriptGameInstance.FindEntityByID on the emitter's entity id, then GetVehiclePS and GetDoorState /
+// GetWindowState for seats 0 to 3); its record's hasSideWindows and player_audio_resource are read once. A car
+// that left traffic (kind 3) has no entity id and keeps its EQ.
+//
+// The EQ goes off for that car's Wwise game object only: CAkParameterNodeBase::BypassFX (0x1ade2b0, the setter
+// Wwise's Bypass Effect action uses) takes (node, effect slot, bypass, CAkRegisteredObj*, fromReset), one slot per
+// call, and a voice that starts later on the same game object starts with it.
 constexpr uint32_t kNpcReceiverSounds[] = {882536694, 381815666, 234614324, 924785061,
                                            329334756, 937325872, 686441992};  // kNpcReceivers' sounds, in order
 constexpr uint32_t kEffectSlots = 2;  // the muscle receiver has two effects, the others one
+constexpr int kSeatDoors = 4;         // EVehicleDoor seat_front_left .. seat_back_right
 using AkBypassFxFn = void (*)(uintptr_t aNode, uint32_t aSlot, bool aBypass, uintptr_t aObject, bool aFromReset);
 using AkGetObjFn = uintptr_t (*)(uintptr_t aRegistry, uint64_t aGameObject);
 using AkGameObjectFn = uint64_t (*)(uint32_t aPlayingId);
 
-int g_open = 0;         // from atr_tune.txt
-int g_openApplied = 0;  // the value the live voices were last set for
-std::unordered_map<uint32_t, uint64_t> g_openVoices;  // playing id -> game object, voices already handled
-struct Bypassed
-{
-    uint64_t gameObject;
-    uint32_t sound;
-};
-std::vector<Bypassed> g_bypassed;
+bool g_forceOpen = false;  // tuning build: every traffic car open-air
+#ifdef ATR_TUNE
+// Tuning build only: cars read, found as vehicles and open, since the last perf line.
+uint32_t g_carsRead = 0, g_carsFound = 0, g_carsOpen = 0;
+#endif
 
-bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uint64_t aGameObject, uint32_t aSound, bool aOn)
+struct Car
 {
-    static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    bool open = false;
+    int convertible = -1;  // not read yet
+};
+std::unordered_map<uint64_t, Car> g_cars;  // by entity id
+
+// The bypass this plugin set, by game object and receiver sound.
+std::map<std::pair<uint64_t, uint32_t>, bool> g_bypass;
+
+struct CarRtti
+{
+    RED4ext::CBaseFunction* find = nullptr;
+    RED4ext::CClass* vehicle = nullptr;
+    RED4ext::CBaseFunction* ps = nullptr;
+    RED4ext::CBaseFunction* recordId = nullptr;
+    RED4ext::CBaseFunction* door = nullptr;
+    RED4ext::CBaseFunction* window = nullptr;
+};
+
+bool ResolveCarRtti(CarRtti& aOut)
+{
+    auto* rtti = RED4ext::CRTTISystem::Get();
+    auto* game = rtti ? rtti->GetClass("ScriptGameInstance") : nullptr;
+    auto* ps = rtti ? rtti->GetClass("VehicleComponentPS") : nullptr;
+    aOut.vehicle = rtti ? rtti->GetClass("vehicleBaseObject") : nullptr;
+    if (!game || !ps || !aOut.vehicle)
+    {
+        return false;
+    }
+    aOut.find = game->GetFunction("FindEntityByID");
+    aOut.ps = aOut.vehicle->GetFunction("GetVehiclePS");
+    aOut.recordId = aOut.vehicle->GetFunction("GetRecordID");
+    aOut.door = ps->GetFunction("GetDoorState");
+    aOut.window = ps->GetFunction("GetWindowState");
+    return aOut.find && aOut.ps && aOut.recordId && aOut.door && aOut.window;
+}
+
+// A door or window state (both enums: 0 closed, 1 open, 2 detached for doors).
+uint8_t StateOf(RED4ext::IScriptable* aPs, RED4ext::CBaseFunction* aFn, int aDoor)
+{
+    uint64_t door = static_cast<uint64_t>(aDoor);
+    uint64_t state = 0;
+    RED4ext::StackArgs_t args;
+    args.emplace_back(nullptr, &door);
+    RED4ext::ExecuteFunction(aPs, aFn, &state, args);
+    return static_cast<uint8_t>(state);
+}
+
+bool IsConvertible(const RED4ext::TweakDBID& aRecord)
+{
+    auto* db = RED4ext::TweakDB::Get();
+    if (!db || !aRecord.IsValid())
+    {
+        return false;
+    }
+    if (auto* flat = db->GetFlatValue(RED4ext::TweakDBID(aRecord, ".hasSideWindows")))
+    {
+        const auto value = flat->GetValue();
+        if (value.value && !*static_cast<bool*>(value.value))
+        {
+            return true;
+        }
+    }
+    if (auto* flat = db->GetFlatValue(RED4ext::TweakDBID(aRecord, ".player_audio_resource")))
+    {
+        const auto value = flat->GetValue();
+        const std::string set = value.value ? static_cast<RED4ext::CString*>(value.value)->c_str() : "";
+        return set.find("targa") != std::string::npos || set.find("cabrio") != std::string::npos;
+    }
+    return false;
+}
+
+bool CarIsOpen(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint64_t aEntityId, Car& aCar)
+{
+    RED4ext::ent::EntityID id(aEntityId);
+    RED4ext::Handle<RED4ext::IScriptable> entity;
+    RED4ext::StackArgs_t args;
+    args.emplace_back(nullptr, &aGame);
+    args.emplace_back(nullptr, &id);
+    if (!RED4ext::ExecuteFunction(static_cast<void*>(nullptr), aRtti.find, &entity, args) || !entity ||
+        !entity->GetType()->IsA(aRtti.vehicle))
+    {
+        return false;
+    }
+#ifdef ATR_TUNE
+    ++g_carsFound;
+#endif
+    if (aCar.convertible < 0)
+    {
+        RED4ext::TweakDBID record;
+        RED4ext::ExecuteFunction(entity.instance, aRtti.recordId, &record);
+        aCar.convertible = IsConvertible(record) ? 1 : 0;
+    }
+    if (aCar.convertible == 1)
+    {
+        return true;
+    }
+    RED4ext::Handle<RED4ext::IScriptable> ps;
+    if (!RED4ext::ExecuteFunction(entity.instance, aRtti.ps, &ps) || !ps)
+    {
+        return false;
+    }
+    for (int door = 0; door < kSeatDoors; ++door)
+    {
+        if (StateOf(ps.instance, aRtti.door, door) != 0 || StateOf(ps.instance, aRtti.window, door) != 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Every 250 ms on the game thread: whether each car with a radio voice is open.
+void ReadCars()
+{
+    static uint64_t next = 0;
+    static CarRtti rtti;
+    static int resolved = 0;  // 1 found, -1 not this game build's
+    const uint64_t now = GetTickCount64();
+    if (resolved < 0 || now < next)
+    {
+        return;
+    }
+    next = now + 250;
+    if (!resolved)
+    {
+        resolved = ResolveCarRtti(rtti) ? 1 : -1;
+        if (resolved < 0)
+        {
+            Log("open-air cars: the vehicle functions are not this game build's - every car keeps its EQ");
+            return;
+        }
+    }
+    auto* engine = RED4ext::CGameEngine::Get();
+    auto* instance = engine && engine->framework ? engine->framework->gameInstance : nullptr;
+    if (!instance)
+    {
+        return;
+    }
+    RED4ext::ScriptGameInstance game(instance);
+    std::set<uint64_t> cars;
+    for (const auto& [playingId, voice] : g_voices)
+    {
+        if (voice.car)
+        {
+            cars.insert(voice.key);
+        }
+    }
+    std::erase_if(g_cars, [&](const auto& aEntry) { return !cars.contains(aEntry.first); });
+    for (const auto key : cars)
+    {
+        auto& car = g_cars[key];
+        car.open = CarIsOpen(rtti, game, key, car);
+#ifdef ATR_TUNE
+        ++g_carsRead;
+        g_carsOpen += car.open ? 1 : 0;
+#endif
+    }
+}
+
+bool WantsOpen(const LiveVoice& aVoice)
+{
+    if (g_forceOpen)
+    {
+        return true;
+    }
+    const auto car = aVoice.car ? g_cars.find(aVoice.key) : g_cars.end();
+    return car != g_cars.end() && car->second.open;
+}
+
+bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uintptr_t aRegistry, uint64_t aGameObject, uint32_t aSound,
+                bool aOn)
+{
     __try
     {
         const uintptr_t node = SafeFindObject(aSound);
-        const auto registry = Read<uintptr_t>(base + 0x339f7b0);
-        const uintptr_t object = registry ? aGetObj(registry, aGameObject) : 0;
+        const uintptr_t object = aRegistry ? aGetObj(aRegistry, aGameObject) : 0;
         if (!node || !object)
         {
             return false;
@@ -593,28 +781,6 @@ bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uint64_t aGameObject, 
         for (uint32_t slot = 0; slot < kEffectSlots; ++slot)
         {
             aBypass(node, slot, aOn, object, false);
-        }
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
-}
-
-// `open 2`: the same setter with no game object, which bypasses the receiver's effects for every car at once.
-bool SafeBypassAll(AkBypassFxFn aBypass, uint32_t aSound, bool aOn)
-{
-    __try
-    {
-        const uintptr_t node = SafeFindObject(aSound);
-        if (!node)
-        {
-            return false;
-        }
-        for (uint32_t slot = 0; slot < kEffectSlots; ++slot)
-        {
-            aBypass(node, slot, aOn, 0, false);
         }
         return true;
     }
@@ -636,6 +802,19 @@ uint64_t SafeGameObject(AkGameObjectFn aGameObject, uint32_t aPlayingId)
     }
 }
 
+bool SafeObjectGone(AkGetObjFn aGetObj, uintptr_t aRegistry, uint64_t aGameObject)
+{
+    __try
+    {
+        return !aGetObj(aRegistry, aGameObject);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return true;
+    }
+}
+
+// Every frame: Wwise's lock is tried only when a voice's game object is unknown or its car changed state.
 void OpenAir()
 {
     static const auto bypass =
@@ -644,7 +823,9 @@ void OpenAir()
         AtRva<AkGetObjFn>(0x1b3b230, {0x44, 0x8B, 0x41, 0x30, 0x4C, 0x8B, 0xCA, 0x45, 0x85, 0xC0});
     static const auto gameObject = AtRva<AkGameObjectFn>(0x1ad2680, {0x8B, 0xD1, 0x48, 0x8B, 0x0D});
     static const auto lock = WwiseLock();
+    static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     static bool stopped = false;
+    static uint64_t nextSweep = 0;
     if (stopped)
     {
         return;
@@ -652,90 +833,67 @@ void OpenAir()
     if (!bypass || !getObj || !gameObject || !lock)
     {
         stopped = true;
-        Log("open: the effect bypass is not this game build's - nothing bypassed");
+        Log("open-air cars: the effect bypass is not this game build's - every car keeps its EQ");
         return;
     }
-    std::erase_if(g_openVoices, [](const auto& aEntry) { return !g_voiceReceiver.contains(aEntry.first); });
-    const bool toggled = g_open != g_openApplied;
-    bool pending = toggled;
-    for (const auto& entry : g_voiceReceiver)
+    const uint64_t now = GetTickCount64();
+    const bool sweep = now >= nextSweep;
+    bool pending = sweep;
+    for (const auto& [playingId, voice] : g_voices)
     {
-        if (pending || g_open != 1)
+        if (pending)
         {
             break;
         }
-        pending = !g_openVoices.contains(entry.first);
+        if (voice.gameObject == ~0ull)
+        {
+            pending = true;
+            break;
+        }
+        const auto have = g_bypass.find({voice.gameObject, kNpcReceiverSounds[voice.receiver]});
+        pending = WantsOpen(voice) != (have != g_bypass.end() && have->second);
     }
     if (!pending || !TryEnterCriticalSection(lock))
     {
         return;
     }
-    if (toggled && (g_open == 2 || g_openApplied == 2))
+    const uintptr_t registry = Read<uintptr_t>(base + 0x339f7b0);
+    std::set<uint64_t> live;
+    for (auto& [playingId, voice] : g_voices)
     {
-        uint32_t nodes = 0;
-        for (const auto sound : kNpcReceiverSounds)
+        if (voice.gameObject == ~0ull)
         {
-            nodes += SafeBypassAll(bypass, sound, g_open == 2) ? 1 : 0;
+            voice.gameObject = SafeGameObject(gameObject, playingId);
         }
-        Log(std::string("open: every car's receiver EQ ") + (g_open == 2 ? "off" : "back on") + " on " +
-            std::to_string(nodes) + " of 7 receivers");
-    }
-    uint32_t done = 0, missed = 0;
-    if (g_open != 1)
-    {
-        for (const auto& b : g_bypassed)
+        if (voice.gameObject == ~0ull)
         {
-            SafeBypass(bypass, getObj, b.gameObject, b.sound, false) ? ++done : ++missed;
+            continue;
         }
-        g_bypassed.clear();
-        g_openVoices.clear();
-    }
-    else
-    {
-        for (const auto& [playingId, receiver] : g_voiceReceiver)
+        live.insert(voice.gameObject);
+        const uint32_t sound = kNpcReceiverSounds[voice.receiver];
+        const bool want = WantsOpen(voice);
+        auto& have = g_bypass[{voice.gameObject, sound}];
+        if (have != want && SafeBypass(bypass, getObj, registry, voice.gameObject, sound, want))
         {
-            if (g_openVoices.contains(playingId))
-            {
-                continue;
-            }
-            const uint64_t object = SafeGameObject(gameObject, playingId);
-            const uint32_t sound = kNpcReceiverSounds[receiver];
-            if (object != ~0ull && SafeBypass(bypass, getObj, object, sound, true))
-            {
-                ++done;
-                const bool known = std::find_if(g_bypassed.begin(), g_bypassed.end(), [&](const Bypassed& b) {
-                                       return b.gameObject == object && b.sound == sound;
-                                   }) != g_bypassed.end();
-                if (!known)
-                {
-                    g_bypassed.push_back({object, sound});
-                }
-            }
-            else
-            {
-                ++missed;
-            }
-            g_openVoices[playingId] = object;
+            have = want;
         }
     }
-    g_openApplied = g_open;
+    if (sweep)
+    {
+        // A game object that is gone takes its bypass with it.
+        std::erase_if(g_bypass, [&](const auto& aEntry) {
+            return !live.contains(aEntry.first.first) && SafeObjectGone(getObj, registry, aEntry.first.first);
+        });
+        nextSweep = now + 5000;
+    }
     LeaveCriticalSection(lock);
-    char line[128];
-    std::snprintf(line, sizeof(line), "open: %u voices with the EQ %s, %u missed, %zu cars bypassed", done,
-                  g_open ? "off" : "back on", missed, g_bypassed.size());
-    Log(line);
 }
-#endif
 
-#ifdef ATR_TUNE
-// --- 7. occlusion test (tuning build only) ---
-// The NPC receivers and their mixer read no occlusion parameter, so walls do not stop them; the world radio
-// (radio_default_int) reads game_occlusion. `occlude 1` attaches the world radio's two game_occlusion curves to the
-// NPC mixer once: volume 0 to -12 dB and low-pass 0 to 57. The attach is the parameter node's own virtual at slot
-// 0x1c0 (0x1adda50), the one a bank load calls for every RTPC: (object start, curve description, points), 1 on
-// success. The description is {u8 type, u8 accumulation, u8 scaling, pad, u32 rtpc, u32 parameter, u32 curve id,
-// u32 point count}; a point is {float from, float to, u32 interpolation}. Neither curve can be removed again.
-// Every 10 s the log also reports the highest game_occlusion on a playing traffic radio's game object.
+// --- 7. muffled by walls ---
+// The NPC receivers and their mixer read no occlusion parameter, so walls did not stop them; the world radio
+// (radio_default_int) reads game_occlusion. Its two curves go onto the NPC mixer once, beside the volume write:
+// volume 0 to -12 dB and low-pass 0 to 57. The attach is the parameter node's own SetRTPC virtual at slot 0x1c0
+// (0x1adda50), the one a bank load calls: (object start, curve description, points), 1 on success.
 constexpr uint32_t kRtpcGameOcclusion = 154512849;
 struct AkCurveDesc
 {
@@ -756,9 +914,6 @@ struct AkCurvePoint
 };
 using AkAttachRtpcFn = int (*)(uintptr_t aObject, const AkCurveDesc* aDesc, const AkCurvePoint* aPoints);
 
-int g_occlude = 0;
-bool g_occluded = false;
-
 int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDesc, const AkCurvePoint* aPoints)
 {
     __try
@@ -771,23 +926,15 @@ int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDe
     }
 }
 
-void Occlude()
+void AttachOcclusion()
 {
     static const auto attach =
         AtRva<AkAttachRtpcFn>(0x1adda50, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10});
-    static const auto lock = WwiseLock();
-    if (!g_occlude || g_occluded)
+    static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
+    static const auto lockOff = AtRva<AkCriticalFn>(0x1af7100, {0x48, 0x83, 0xEC, 0x28, 0xFF, 0x15});
+    if (!attach || !lockOn || !lockOff)
     {
-        return;
-    }
-    if (!attach || !lock)
-    {
-        g_occluded = true;
-        Log("occlude: the attach is not this game build's - nothing attached");
-        return;
-    }
-    if (!TryEnterCriticalSection(lock))
-    {
+        Log("the occlusion curves are not this game build's - walls do not muffle traffic radios");
         return;
     }
     // The world radio's own curves (radio.bnk, sound 161720350), with curve ids of this plugin's.
@@ -795,43 +942,20 @@ void Occlude()
     static const AkCurvePoint lowPass[] = {{0.0f, 0.0f, kCurveLinear}, {1.0f, 57.0f, kCurveLinear}};
     const AkCurveDesc volumeDesc{0, 2, 2, 0, kRtpcGameOcclusion, kPropVolume, 0xA7700001, 2};  // additive, dB
     const AkCurveDesc lowPassDesc{0, 6, 0, 0, kRtpcGameOcclusion, kPropLpf, 0xA7700002, 2};    // filter
+    alignas(16) uint8_t critical[16] = {};
+    lockOn(critical);
     const uintptr_t mixer = SafeFindObject(kNpcRadioMixer);
     const int a = mixer ? SafeAttach(attach, mixer, volumeDesc, volume) : 0;
     const int b = mixer ? SafeAttach(attach, mixer, lowPassDesc, lowPass) : 0;
-    LeaveCriticalSection(lock);
-    g_occluded = true;
-    Log("occlude: game_occlusion attached to the NPC mixer - volume " + std::to_string(a) + ", low-pass " +
-        std::to_string(b) + " (1 = done)");
+    lockOff(critical);
+    Log(a == 1 && b == 1 ? "walls muffle traffic radios: occlusion attached to the NPC car radio mixer"
+                         : "the occlusion curves did not attach - walls do not muffle traffic radios");
 }
-
-// The highest game_occlusion on a live traffic radio's game object, or -1. Called under Wwise's lock.
-float SafeMaxOcclusion(AkGetRtpcValueFn aGet, AkGameObjectFn aGameObject)
-{
-    float best = -1.0f;
-    for (const auto& entry : g_voiceReceiver)
-    {
-        __try
-        {
-            const uint64_t object = aGameObject(entry.first);
-            float value = 0.0f;
-            int scope = 2;  // RTPCValue_GameObject
-            if (object != ~0ull && aGet(kRtpcGameOcclusion, object, 0, &value, &scope) == 1)
-            {
-                best = std::fmax(best, value);
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-        }
-    }
-    return best;
-}
-#endif
 
 #ifdef ATR_TUNE
 // Tuning build only: atr_tune.txt beside the DLL, read every 2 s. Lines `levels <bottom dB> <top dB>` and
 // `muffle <dB> <low-pass>`. A change writes the mixer again on the next frame; a levels change also levels every
-// live voice again. `open <0|1|2>` switches the open-air test (2: every car at once); `occlude 1` attaches the occlusion curves.
+// live voice again. `open 1` treats every traffic car as open-air, for comparing by ear.
 void ReadTuning()
 {
     static uint64_t next = 0;
@@ -854,26 +978,19 @@ void ReadTuning()
         return;
     }
     float bottom = g_levelBottom, top = g_levelTop, muffleDb = g_muffleDb, muffleLpf = g_muffleLpf;
-    int open = g_open;
-    int occlude = g_occlude;
+    int open = g_forceOpen ? 1 : 0;
     char text[128];
     while (std::fgets(text, sizeof(text), f))
     {
         std::sscanf(text, " levels %f %f", &bottom, &top);
         std::sscanf(text, " muffle %f %f", &muffleDb, &muffleLpf);
         std::sscanf(text, " open %d", &open);
-        std::sscanf(text, " occlude %d", &occlude);
     }
     std::fclose(f);
-    if (occlude != g_occlude)
+    if ((open != 0) != g_forceOpen)
     {
-        g_occlude = occlude;
-        Log(occlude ? "tune: occlusion test on" : "tune: occlusion test off (attached curves stay until a restart)");
-    }
-    if (open != g_open)
-    {
-        g_open = open;
-        Log(open ? "tune: open-air test on" : "tune: open-air test off");
+        g_forceOpen = open != 0;
+        Log(g_forceOpen ? "tune: every traffic car open-air" : "tune: open-air by doors and windows");
     }
     const bool levels = bottom != g_levelBottom || top != g_levelTop;
     const bool muffle = muffleDb != g_muffleDb || muffleLpf != g_muffleLpf;
@@ -922,8 +1039,8 @@ void TimedLevelVoices()
     QueryPerformanceCounter(&a);
     LevelVoices();
     Muffle();
+    ReadCars();
     OpenAir();
-    Occlude();
     QueryPerformanceCounter(&b);
     const double us = static_cast<double>(b.QuadPart - a.QuadPart) * toMicros;
     ++g_cost.scans;
@@ -942,16 +1059,10 @@ void TimedLevelVoices()
                       static_cast<unsigned long long>(g_cost.scans), g_cost.total / g_cost.scans, g_cost.worst,
                       g_cost.voices);
         Log(line);
-        static const auto get = AtRva<AkGetRtpcValueFn>(0x1ad2c60, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C});
-        static const auto gameObject = AtRva<AkGameObjectFn>(0x1ad2680, {0x8B, 0xD1, 0x48, 0x8B, 0x0D});
-        static const auto lock = WwiseLock();
-        if (get && gameObject && lock && !g_voiceReceiver.empty() && TryEnterCriticalSection(lock))
-        {
-            const float occlusion = SafeMaxOcclusion(get, gameObject);
-            LeaveCriticalSection(lock);
-            std::snprintf(line, sizeof(line), "occlusion: highest game_occlusion on a traffic radio %.2f", occlusion);
-            Log(line);
-        }
+        std::snprintf(line, sizeof(line), "cars: %u reads, %u found as vehicles, %u open", g_carsRead, g_carsFound,
+                      g_carsOpen);
+        Log(line);
+        g_carsRead = g_carsFound = g_carsOpen = 0;
     }
     g_cost = ScanCost{};
     g_cost.next = now + 10000;
@@ -979,6 +1090,7 @@ bool OnUpdate(RED4ext::CGameApplication*)
         case Mixer::Set:
             g_mixerNow = g_levelTop;
             Log("the NPC car radio mixer plays at " + std::to_string(found) + " dB");
+            AttachOcclusion();
             mixerDone = true;
             break;
         case Mixer::Unexpected:
@@ -996,6 +1108,8 @@ bool OnUpdate(RED4ext::CGameApplication*)
 #else
     LevelVoices();
     Muffle();
+    ReadCars();
+    OpenAir();
 #endif
     return false;
 }
