@@ -779,6 +779,43 @@ float CarOpenness(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint
     return std::fmin(1.0f, open);
 }
 
+#ifdef ATR_TUNE
+float OpennessOf(const LiveVoice& aVoice);
+
+// Tuning build only: each car with a radio voice as `<entity id> <level dB> <openness>` in atr_live.txt, in the Radio
+// Probe Overlay's folder when that dev mod is installed, which draws it on the car.
+void WriteOverlay()
+{
+    static const std::wstring path = []
+    {
+        wchar_t exe[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        std::wstring dir(exe);
+        dir = dir.substr(0, dir.find_last_of(L'\\') + 1) + L"plugins\\cyber_engine_tweaks\\mods\\RadioProbeOverlay\\";
+        return GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES ? std::wstring() : dir + L"atr_live.txt";
+    }();
+    if (path.empty())
+    {
+        return;
+    }
+    FILE* f = _wfopen(path.c_str(), L"w");
+    if (!f)
+    {
+        return;
+    }
+    std::set<uint64_t> written;
+    for (const auto& [playingId, voice] : g_voices)
+    {
+        if (voice.car && written.insert(voice.key).second)
+        {
+            std::fprintf(f, "%llu %.1f %.2f\n", static_cast<unsigned long long>(voice.key), voice.levelDb,
+                         OpennessOf(voice));
+        }
+    }
+    std::fclose(f);
+}
+#endif
+
 // Every 250 ms on the game thread: how open each car with a radio voice is.
 void ReadCars()
 {
@@ -829,6 +866,9 @@ void ReadCars()
         g_carsOpen += car.openness > 0.0f ? 1 : 0;
 #endif
     }
+#ifdef ATR_TUNE
+    WriteOverlay();
+#endif
 }
 
 float OpennessOf(const LiveVoice& aVoice)
