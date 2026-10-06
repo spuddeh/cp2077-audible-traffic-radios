@@ -15,3 +15,6 @@ images/
 .history/
 *.log
 plugin/build-tune/
+
+# Python
+__pycache__/
