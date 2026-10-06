@@ -77,7 +77,8 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 ## Pending checks
 
 ## Planned
-- [ ] A preview build for the author of Immersive NPC Car Stereos (Priority: High).
+- [x] A preview build for the author of Immersive NPC Car Stereos: GitHub pre-release `v0.1.0-preview`
+  (2026-10-06), the release DLL verified in game first.
 - [ ] Open-air cars by ear in normal play: the weights, the +3 dB rise, muscle and police receivers.
 - [ ] A versioned API for Immersive NPC Car Stereos, shaped by that author's feedback.
 - [ ] More station variety on traffic cars.
