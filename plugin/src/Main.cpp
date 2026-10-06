@@ -1017,7 +1017,8 @@ int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDe
 
 // --- 8. the receiver EQs fade with openness ---
 // Each NPC receiver's Parametric EQ gets curves on atr_open_air that bring it flat at 1: every shelf and peak gain
-// to 0 dB, every notch narrowed to Q 30, the output level to 0 dB. The attach is CAkFxBase's own (0x1b50b20, the
+// to 0 dB and every notch narrowed to Q 30, while the output level drops by what flattening adds in loudness (pink
+// noise, K-weighted; never raised). A curve's points blend in amplitude, so each has five, even in dB (Q in ratio). The attach is CAkFxBase's own (0x1b50b20, the
 // one a bank load calls for an effect's RTPC): (effect, curve description, points), 1 on success, and it reaches
 // effect instances already playing. Effects sit in g_pIndex's table 9, the indexed pointer being the object (vtable
 // CAkFxCustom 0x2f75ac0). A Parametric EQ parameter is band * 5 + (0 type, 1 gain, 2 frequency, 3 Q, 4 on), and 15
@@ -1030,18 +1031,20 @@ struct EqFade
     float q[3];
     bool on[3];
     float output;
+    float louder;  // dB an open car gains over a closed one, taken off the output level
 };
 constexpr EqFade kEqFades[] = {
-    {828314749, {4, 3, 5}, {-5.5f, -24.0f, -24.0f}, {1.0f, 0.5f, 1.0f}, {true, true, true}, 4.0f},   // lowend
-    {600002266, {4, 6, 5}, {6.5f, 6.0f, -24.0f}, {1.0f, 0.5f, 0.5f}, {true, true, true}, 3.0f},      // muscle
-    {145669955, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 0.0f},      // sports
-    {869899093, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f},      // suv
-    {735462065, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f},      // truck
-    {947417206, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f},      // hyper
-    {364560772, {4, 6, 5}, {-24.0f, 0.0f, -24.0f}, {1.0f, 1.0f, 1.0f}, {true, false, true}, 0.0f},   // police
+    {828314749, {4, 3, 5}, {-5.5f, -24.0f, -24.0f}, {1.0f, 0.5f, 1.0f}, {true, true, true}, 4.0f, 4.3f},  // lowend
+    {600002266, {4, 6, 5}, {6.5f, 6.0f, -24.0f}, {1.0f, 0.5f, 0.5f}, {true, true, true}, 3.0f, 0.1f},     // muscle
+    {145669955, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 0.0f, 0.7f},     // sports
+    {869899093, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 0.0f},     // suv
+    {735462065, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 0.0f},     // truck
+    {947417206, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f, 0.0f},     // hyper
+    {364560772, {4, 6, 5}, {-24.0f, 0.0f, -24.0f}, {1.0f, 1.0f, 1.0f}, {true, false, true}, 0.0f, 2.3f},  // police
 };
 constexpr uint8_t kNotch = 3;
 constexpr float kOpenNotchQ = 30.0f;
+constexpr uint32_t kFadePoints = 5;
 using AkFxAttachRtpcFn = int (*)(uintptr_t aFx, const AkCurveDesc* aDesc, const AkCurvePoint* aPoints);
 
 uintptr_t SafeFindFx(uint32_t aId)
@@ -1094,12 +1097,19 @@ std::pair<int, int> AttachEqFades()
     for (const auto& eq : kEqFades)
     {
         const uintptr_t fx = attach ? SafeFindFx(eq.fx) : 0;
-        const auto add = [&](uint32_t aParameter, uint8_t aAccumulation, uint8_t aScaling, float aFrom, float aTo) {
-            const AkCurvePoint points[] = {{0.0f, aFrom, kCurveLinear}, {1.0f, aTo, kCurveLinear}};
-            const AkCurveDesc desc{0, aAccumulation, aScaling, 0, kRtpcOpenAir, aParameter, curveId++, 2};
+        // aValue gives the curve's value at openness 0 to 1; five points keep the steps even.
+        const auto add = [&](uint32_t aParameter, uint8_t aAccumulation, uint8_t aScaling, auto aValue) {
+            AkCurvePoint points[kFadePoints];
+            for (uint32_t i = 0; i < kFadePoints; ++i)
+            {
+                const float t = static_cast<float>(i) / (kFadePoints - 1);
+                points[i] = {t, aValue(t), kCurveLinear};
+            }
+            const AkCurveDesc desc{0, aAccumulation, aScaling, 0, kRtpcOpenAir, aParameter, curveId++, kFadePoints};
             ++tried;
             done += fx && SafeFxAttach(attach, fx, desc, points) == 1 ? 1 : 0;
         };
+        const auto dbBy = [](float aDb) { return [aDb](float aT) { return std::pow(10.0f, aDb * aT / 20.0f) - 1.0f; }; };
         for (uint32_t band = 0; band < 3; ++band)
         {
             if (!eq.on[band])
@@ -1108,16 +1118,17 @@ std::pair<int, int> AttachEqFades()
             }
             if (eq.type[band] == kNotch)
             {
-                add(band * 5 + 3, 1, 0, eq.q[band], kOpenNotchQ);  // exclusive, linear
+                const float q = eq.q[band];
+                add(band * 5 + 3, 1, 0, [q](float aT) { return q * std::pow(kOpenNotchQ / q, aT); });  // exclusive
             }
             else
             {
-                add(band * 5 + 1, 2, 2, 0.0f, std::pow(10.0f, -eq.gain[band] / 20.0f) - 1.0f);  // additive, dB
+                add(band * 5 + 1, 2, 2, dbBy(-eq.gain[band]));  // additive, dB
             }
         }
-        if (eq.output != 0.0f)
+        if (eq.output != 0.0f || eq.louder != 0.0f)
         {
-            add(15, 2, 2, 0.0f, std::pow(10.0f, -eq.output / 20.0f) - 1.0f);
+            add(15, 2, 2, dbBy(-eq.output - eq.louder));
         }
     }
     return {done, tried};
