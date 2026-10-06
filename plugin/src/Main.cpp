@@ -865,9 +865,6 @@ void ReadCars()
         g_carsOpen += car.openness > 0.0f ? 1 : 0;
 #endif
     }
-#ifdef ATR_TUNE
-    WriteOverlay();
-#endif
 }
 
 float OpennessOf(const LiveVoice& aVoice)
@@ -1308,6 +1305,8 @@ struct ScanCost
     uint64_t scans = 0;
     double total = 0.0;
     double worst = 0.0;
+    double part[3] = {};       // levels and muffling, reading the cars, open-air
+    double partWorst[3] = {};
     uint32_t voices = 0;
     uint64_t next = 0;
 };
@@ -1321,14 +1320,22 @@ void TimedLevelVoices()
         QueryPerformanceFrequency(&f);
         return 1e6 / static_cast<double>(f.QuadPart);
     }();
-    LARGE_INTEGER a, b;
-    QueryPerformanceCounter(&a);
+    LARGE_INTEGER t[4];
+    QueryPerformanceCounter(&t[0]);
     LevelVoices();
     Muffle();
+    QueryPerformanceCounter(&t[1]);
     ReadCars();
+    QueryPerformanceCounter(&t[2]);
     OpenAir();
-    QueryPerformanceCounter(&b);
-    const double us = static_cast<double>(b.QuadPart - a.QuadPart) * toMicros;
+    QueryPerformanceCounter(&t[3]);
+    for (int i = 0; i < 3; ++i)
+    {
+        const double part = static_cast<double>(t[i + 1].QuadPart - t[i].QuadPart) * toMicros;
+        g_cost.part[i] += part;
+        g_cost.partWorst[i] = std::fmax(g_cost.partWorst[i], part);
+    }
+    const double us = static_cast<double>(t[3].QuadPart - t[0].QuadPart) * toMicros;
     ++g_cost.scans;
     g_cost.total += us;
     g_cost.worst = std::fmax(g_cost.worst, us);
@@ -1344,6 +1351,12 @@ void TimedLevelVoices()
         std::snprintf(line, sizeof(line), "perf: %llu scans, average %.1f us, worst %.1f us, up to %u voices",
                       static_cast<unsigned long long>(g_cost.scans), g_cost.total / g_cost.scans, g_cost.worst,
                       g_cost.voices);
+        Log(line);
+        std::snprintf(line, sizeof(line),
+                      "perf parts: levels+muffle %.1f / %.1f us, reading cars %.1f / %.1f us, open-air %.1f / %.1f us "
+                      "(average / worst)",
+                      g_cost.part[0] / g_cost.scans, g_cost.partWorst[0], g_cost.part[1] / g_cost.scans,
+                      g_cost.partWorst[1], g_cost.part[2] / g_cost.scans, g_cost.partWorst[2]);
         Log(line);
         std::snprintf(line, sizeof(line), "cars: %u reads, %u found as vehicles, %u open", g_carsRead, g_carsFound,
                       g_carsOpen);
@@ -1401,6 +1414,12 @@ bool OnUpdate(RED4ext::CGameApplication*)
     ReadTuning();
     TimedLevelVoices();
     DrainEqView();
+    static uint64_t nextOverlay = 0;
+    if (GetTickCount64() >= nextOverlay)
+    {
+        nextOverlay = GetTickCount64() + 250;
+        WriteOverlay();
+    }
 #else
     LevelVoices();
     Muffle();
