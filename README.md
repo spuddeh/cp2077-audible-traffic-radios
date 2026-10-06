@@ -30,8 +30,10 @@ Some of this is the game's own and only held back; some is new.
   cars, Royal Blue Radio on executive cars and limousines.
 
 What you hear is the game's own car radio sound: each car class's own filtering, so it sounds like music from
-inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m. Combat and police
-music still silence traffic radios, and dialogue still lowers them, as in the base game.
+inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m. Police music still
+silences traffic radios, as in the base game; the game's combat music is set to do the same, and dialogue to
+lower them. A car that has left traffic (one you get out of, or one hit, fleeing or abandoned) keeps the closed
+sound with its doors open, and its level is picked again as it leaves traffic.
 
 No sound bank is shipped or replaced: the changes are made to the sound data the game has loaded. Every address is
 verified before it is used, and on any other game build the plugin logs a line and changes nothing.

@@ -175,7 +175,10 @@ produced one wrong conclusion during development.
 
 ## 5. What the game does that this plugin leaves alone
 
-- Combat and police music silence the NPC radio bus (`init.bnk` ducks it by -96 dB), which outweighs the boost.
-- Important and gameplay dialogue lower the radio buses through RTPC sidechains.
+- Police music silences the NPC radio bus (`init.bnk` ducks it by -96 dB, which outweighs the boost; measured with
+  the bus meters). Combat music carries the same duck in `init.bnk`; not checked in game.
+- Important and gameplay dialogue are set to lower the radio buses through RTPC sidechains (read from `init.bnk`).
+- A car that has left traffic (kind 3: one the player gets out of, or one hit, fleeing or abandoned) has no entity
+  id on its emitter, so it stays closed for the open-air fade and its level is keyed on the voice.
 - Police traffic cars never start a radio; the police scanner station is not heard from traffic.
 - A hijacked car hands over to the player's receiver within 0.3 s, on the same station for vanilla stations.
