@@ -12,6 +12,8 @@
 //   3. The NPC car radio mixer (Wwise actor mixer 398448775) plays at the top of a level range instead of -8 dB,
 //      set on the loaded object through Wwise's own property setter, and each car's radio sits somewhere in that
 //      range. The receivers, their EQ, distance falloff and bus stay the game's.
+//   4. From inside a car in first person, the same mixer is turned down and low-passed, as the game already does
+//      for traffic engines but not for radios.
 //
 // **Every address is verified before it is used, and a value is written only over the one expected.** On any
 // other game build the plugin logs a line and changes nothing.
@@ -173,12 +175,19 @@ void PatchCarRadioRule()
 // start and runs under Wwise's global lock (CAkFunctionCritical, 0x1af6d90 / 0x1af7100).
 constexpr uint32_t kNpcRadioMixer = 398448775;
 constexpr uint8_t kPropVolume = 0;
+constexpr uint8_t kPropLpf = 2;  // the actor-mixer property bundle's low-pass id: radio.bnk stores 10 to 64 under it
 constexpr float kVanillaVolume = -8.0f;
 
 // The range a car's radio plays in, in dB on the mixer. The mixer is set to the top; each voice is lowered from
 // there by its own share of the range.
 float g_levelTop = 12.0f;
 float g_levelBottom = 0.0f;
+
+// From inside a car: how far the mixer drops (dB) and how much low-pass it gets (0 to 100), at full veh_interior.
+float g_muffleDb = -6.0f;
+float g_muffleLpf = 40.0f;
+// The mixer volume this plugin last wrote, which a later write must find there.
+float g_mixerNow = std::numeric_limits<float>::quiet_NaN();
 
 using AkSetPropFn = void (*)(void* aObject, int aProp, float aValue, float aMin, float aMax);
 using AkCriticalFn = void (*)(void* aSelf);
@@ -239,8 +248,9 @@ enum class Mixer
     Unexpected,
 };
 
-// Sets the mixer's volume to aTarget when it holds the vanilla value or aPrevious; reports what it found.
-Mixer SetMixerVolume(float aTarget, float aPrevious, float* aFound)
+// Sets the mixer's volume to aTarget and its low-pass to aLpf when its volume holds the vanilla value or
+// aPrevious; reports the volume it found.
+Mixer SetMixerVolume(float aTarget, float aPrevious, float aLpf, float* aFound)
 {
     static const auto setProp = AtRva<AkSetPropFn>(0x1b07990, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83});
     static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
@@ -258,6 +268,7 @@ Mixer SetMixerVolume(float aTarget, float aPrevious, float* aFound)
     if (object && (std::fabs(before - kVanillaVolume) < 0.001f || std::fabs(before - aPrevious) < 0.001f))
     {
         setProp(reinterpret_cast<void*>(object), kPropVolume, aTarget, 0.0f, 0.0f);
+        setProp(reinterpret_cast<void*>(object), kPropLpf, aLpf, 0.0f, 0.0f);
         result = Mixer::Set;
     }
     else if (object)
@@ -442,9 +453,66 @@ void LevelVoices()
     std::erase_if(g_levelled, [](const auto& aEntry) { return aEntry.second != g_round; });
 }
 
+// --- 5. muffled from inside a car ---
+// veh_interior (290459857), read global through AK::SoundEngine::Query::GetRTPCValue (0x1ad2c60), is the game's
+// own "inside a car" value: 1 in first person in a car, 0 in third person or on foot, lowered by broken glass. The
+// mixer follows it: volume g_levelTop + g_muffleDb * value, low-pass g_muffleLpf * value.
+constexpr uint32_t kRtpcVehInterior = 290459857;
+using AkGetRtpcValueFn = int (*)(uint32_t aRtpc, uint64_t aGameObject, uint32_t aPlayingId, float* aValue,
+                                 int* aScope);
+float g_interior = -1.0f;  // the value the mixer was last written for
+
+float SafeInterior(AkGetRtpcValueFn aGet)
+{
+    __try
+    {
+        float value = 0.0f;
+        int scope = 1;  // RTPCValue_Global
+        return aGet(kRtpcVehInterior, ~0ull, 0, &value, &scope) == 1 ? value : -1.0f;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1.0f;
+    }
+}
+
+void Muffle()
+{
+    static const auto get = AtRva<AkGetRtpcValueFn>(0x1ad2c60, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C});
+    static bool stopped = false;
+    if (stopped)
+    {
+        return;
+    }
+    if (!get)
+    {
+        stopped = true;
+        Log("the in-car muffling is not this game build's - radios are not muffled from inside a car");
+        return;
+    }
+    const float interior = SafeInterior(get);
+    if (interior < 0.0f || std::fabs(interior - g_interior) < 0.01f)
+    {
+        return;
+    }
+    const float target = g_levelTop + g_muffleDb * interior;
+    float found = 0.0f;
+    if (SetMixerVolume(target, g_mixerNow, g_muffleLpf * interior, &found) == Mixer::Set)
+    {
+        g_mixerNow = target;
+        g_interior = interior;
+    }
+    else
+    {
+        stopped = true;
+        Log("the NPC car radio mixer holds " + std::to_string(found) + " dB, not this plugin's - muffling stopped");
+    }
+}
+
 #ifdef ATR_TUNE
-// Tuning build only: atr_tune.txt beside the DLL, read every 2 s. One line, `levels <bottom dB> <top dB>`. A
-// change sets the mixer to the new top and levels every live voice again.
+// Tuning build only: atr_tune.txt beside the DLL, read every 2 s. Lines `levels <bottom dB> <top dB>` and
+// `muffle <dB> <low-pass>`. A change writes the mixer again on the next frame; a levels change also levels every
+// live voice again.
 void ReadTuning()
 {
     static uint64_t next = 0;
@@ -466,21 +534,32 @@ void ReadTuning()
     {
         return;
     }
-    float bottom = 0.0f, top = 0.0f;
-    const bool read = std::fscanf(f, " levels %f %f", &bottom, &top) == 2;
+    float bottom = g_levelBottom, top = g_levelTop, muffleDb = g_muffleDb, muffleLpf = g_muffleLpf;
+    char text[128];
+    while (std::fgets(text, sizeof(text), f))
+    {
+        std::sscanf(text, " levels %f %f", &bottom, &top);
+        std::sscanf(text, " muffle %f %f", &muffleDb, &muffleLpf);
+    }
     std::fclose(f);
-    if (!read || (bottom == g_levelBottom && top == g_levelTop))
+    const bool levels = bottom != g_levelBottom || top != g_levelTop;
+    const bool muffle = muffleDb != g_muffleDb || muffleLpf != g_muffleLpf;
+    if (!levels && !muffle)
     {
         return;
     }
-    const float previous = g_levelTop;
     g_levelBottom = bottom;
     g_levelTop = top;
-    float found = 0.0f;
-    SetMixerVolume(g_levelTop, previous, &found);
-    g_levelled.clear();
-    char line[128];
-    std::snprintf(line, sizeof(line), "tune: levels %.1f to %.1f dB, mixer at %.1f dB", bottom, top, found);
+    g_muffleDb = muffleDb;
+    g_muffleLpf = muffleLpf;
+    g_interior = -1.0f;  // makes the next frame write the mixer again
+    if (levels)
+    {
+        g_levelled.clear();
+    }
+    char line[160];
+    std::snprintf(line, sizeof(line), "tune: levels %.1f to %.1f dB, muffle %.1f dB low-pass %.0f", bottom, top,
+                  muffleDb, muffleLpf);
     Log(line);
 }
 #endif
@@ -509,6 +588,7 @@ void TimedLevelVoices()
     LARGE_INTEGER a, b;
     QueryPerformanceCounter(&a);
     LevelVoices();
+    Muffle();
     QueryPerformanceCounter(&b);
     const double us = static_cast<double>(b.QuadPart - a.QuadPart) * toMicros;
     ++g_cost.scans;
@@ -549,9 +629,10 @@ bool OnUpdate(RED4ext::CGameApplication*)
         }
         next = now + 1000;
         float found = 0.0f;
-        switch (SetMixerVolume(g_levelTop, g_levelTop, &found))
+        switch (SetMixerVolume(g_levelTop, g_levelTop, 0.0f, &found))
         {
         case Mixer::Set:
+            g_mixerNow = g_levelTop;
             Log("the NPC car radio mixer plays at " + std::to_string(found) + " dB");
             mixerDone = true;
             break;
@@ -569,6 +650,7 @@ bool OnUpdate(RED4ext::CGameApplication*)
     TimedLevelVoices();
 #else
     LevelVoices();
+    Muffle();
 #endif
     return false;
 }
