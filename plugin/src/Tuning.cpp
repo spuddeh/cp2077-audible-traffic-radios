@@ -1,0 +1,219 @@
+// Tuning build only: the tuning file, the perf lines, the EQ view and the overlay feed.
+
+#include "Atr.hpp"
+
+namespace atr
+{
+#ifdef ATR_TUNE
+// --- tuning build: EQ view ---
+// Every gain, Q and output value a Parametric EQ receives: CAkParameterEQFXParams::SetParam (0x1ab4640: this, short
+// id, const float*, size) is hooked. Ids: band * 5 + 1 gain (dB, clamped to +-24), + 3 Q, 15 output gain (dB). The
+// audio thread only records; the game thread logs, with each block's band 1 and band 3 frequency to tell the
+// receivers apart (fields at +0x10 + band * 20).
+using EqSetParamFn = int (*)(void* aThis, int16_t aId, const void* aValue, uint32_t aSize);
+EqSetParamFn g_eqSetParam = nullptr;
+struct EqCall
+{
+    void* self;
+    int16_t id;
+    float value;
+};
+std::mutex g_eqMutex;
+std::vector<EqCall> g_eqCalls;
+
+int EqSetParamDetour(void* aThis, int16_t aId, const void* aValue, uint32_t aSize)
+{
+    if (aValue && aSize == sizeof(float) && (aId % 5 == 1 || aId % 5 == 3 || aId == 15))
+    {
+        std::lock_guard lock(g_eqMutex);
+        if (g_eqCalls.size() < 4096)
+        {
+            g_eqCalls.push_back({aThis, aId, *static_cast<const float*>(aValue)});
+        }
+    }
+    return g_eqSetParam(aThis, aId, aValue, aSize);
+}
+
+void HookEqView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk)
+{
+    const auto target = AtRva<void*>(0x1ab4640, {0x4C, 0x8B, 0xC9, 0x4D, 0x85, 0xC0, 0x75, 0x05});
+    const bool hooked = target && aSdk->hooking->Attach(aHandle, target, reinterpret_cast<void*>(&EqSetParamDetour),
+                                                        reinterpret_cast<void**>(&g_eqSetParam));
+    Log(hooked ? "eq view: hooked" : "eq view: SetParam not this game build's - no EQ view");
+}
+
+void DrainEqView()
+{
+    std::vector<EqCall> calls;
+    {
+        std::lock_guard lock(g_eqMutex);
+        calls.swap(g_eqCalls);
+    }
+    for (const auto& call : calls)
+    {
+        const auto block = reinterpret_cast<uintptr_t>(call.self);
+        const char* what = call.id == 15 ? "output" : call.id % 5 == 1 ? "gain" : "Q";
+        char line[160];
+        std::snprintf(line, sizeof(line), "eq %p (f1 %.0f, f3 %.0f): band %d %s = %.3f", call.self,
+                      Read<float>(block + 0x10), Read<float>(block + 0x10 + 2 * 20), call.id / 5 + 1, what, call.value);
+        Log(line);
+    }
+}
+#endif
+
+#ifdef ATR_TUNE
+// Tuning build only: atr_tune.txt beside the DLL, read every 2 s. Lines `levels <bottom dB> <top dB>` and
+// `muffle <dB> <low-pass>`. A change writes the mixer again on the next frame; a levels change also levels every
+// live voice again. `open 1` treats every traffic car as fully open, for comparing by ear; `weights <window>
+// <door> <torn-off door> <pane>` sets what each opening adds to a car's openness.
+void ReadTuning()
+{
+    static uint64_t next = 0;
+    const uint64_t now = GetTickCount64();
+    if (now < next)
+    {
+        return;
+    }
+    next = now + 2000;
+    wchar_t path[MAX_PATH] = {};
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&ReadTuning), &self);
+    GetModuleFileNameW(self, path, MAX_PATH);
+    std::wstring file(path);
+    file = file.substr(0, file.find_last_of(L'\\') + 1) + L"atr_tune.txt";
+    FILE* f = _wfopen(file.c_str(), L"r");
+    if (!f)
+    {
+        return;
+    }
+    float bottom = g_levelBottom, top = g_levelTop, muffleDb = g_muffleDb, muffleLpf = g_muffleLpf;
+    int open = g_forceOpen ? 1 : 0;
+    float window = g_weightWindow, door = g_weightDoor, detached = g_weightDetached, pane = g_weightGlass;
+    char text[128];
+    while (std::fgets(text, sizeof(text), f))
+    {
+        std::sscanf(text, " levels %f %f", &bottom, &top);
+        std::sscanf(text, " muffle %f %f", &muffleDb, &muffleLpf);
+        std::sscanf(text, " open %d", &open);
+        std::sscanf(text, " weights %f %f %f %f", &window, &door, &detached, &pane);
+    }
+    std::fclose(f);
+    if (window != g_weightWindow || door != g_weightDoor || detached != g_weightDetached || pane != g_weightGlass)
+    {
+        g_weightWindow = window;
+        g_weightDoor = door;
+        g_weightDetached = detached;
+        g_weightGlass = pane;
+        char weights[128];
+        std::snprintf(weights, sizeof(weights), "tune: openness window %.2f, door %.2f, torn-off door %.2f, pane %.2f",
+                      window, door, detached, pane);
+        Log(weights);
+    }
+    if ((open != 0) != g_forceOpen)
+    {
+        g_forceOpen = open != 0;
+        Log(g_forceOpen ? "tune: every traffic car fully open" : "tune: openness from doors, windows and glass");
+    }
+    const bool levels = bottom != g_levelBottom || top != g_levelTop;
+    const bool muffle = muffleDb != g_muffleDb || muffleLpf != g_muffleLpf;
+    if (!levels && !muffle)
+    {
+        return;
+    }
+    g_levelBottom = bottom;
+    g_levelTop = top;
+    g_muffleDb = muffleDb;
+    g_muffleLpf = muffleLpf;
+    g_interior = -1.0f;  // makes the next frame write the mixer again
+    if (levels)
+    {
+        g_levelled.clear();
+    }
+    char line[160];
+    std::snprintf(line, sizeof(line), "tune: levels %.1f to %.1f dB, muffle %.1f dB low-pass %.0f", bottom, top,
+                  muffleDb, muffleLpf);
+    Log(line);
+}
+#endif
+
+#ifdef ATR_TUNE
+// Tuning build only: the voice scan's own cost, logged every 10 s as scans, average and worst time per scan, and
+// the most voices seen in one scan.
+struct ScanCost
+{
+    uint64_t scans = 0;
+    double total = 0.0;
+    double worst = 0.0;
+    double part[3] = {};       // levels and muffling, reading the cars, open-air
+    double partWorst[3] = {};
+    uint32_t voices = 0;
+    uint64_t next = 0;
+};
+ScanCost g_cost;
+
+void TimedLevelVoices()
+{
+    static const double toMicros = []
+    {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return 1e6 / static_cast<double>(f.QuadPart);
+    }();
+    LARGE_INTEGER t[4];
+    QueryPerformanceCounter(&t[0]);
+    LevelVoices();
+    Muffle();
+    QueryPerformanceCounter(&t[1]);
+    ReadCars();
+    QueryPerformanceCounter(&t[2]);
+    OpenAir();
+    QueryPerformanceCounter(&t[3]);
+    for (int i = 0; i < 3; ++i)
+    {
+        const double part = static_cast<double>(t[i + 1].QuadPart - t[i].QuadPart) * toMicros;
+        g_cost.part[i] += part;
+        g_cost.partWorst[i] = std::fmax(g_cost.partWorst[i], part);
+    }
+    const double us = static_cast<double>(t[3].QuadPart - t[0].QuadPart) * toMicros;
+    ++g_cost.scans;
+    g_cost.total += us;
+    g_cost.worst = std::fmax(g_cost.worst, us);
+    g_cost.voices = (std::max)(g_cost.voices, static_cast<uint32_t>(g_levelled.size()));
+    const uint64_t now = GetTickCount64();
+    if (now < g_cost.next)
+    {
+        return;
+    }
+    if (g_cost.next)
+    {
+        char line[160];
+        std::snprintf(line, sizeof(line), "perf: %llu scans, average %.1f us, worst %.1f us, up to %u voices",
+                      static_cast<unsigned long long>(g_cost.scans), g_cost.total / g_cost.scans, g_cost.worst,
+                      g_cost.voices);
+        Log(line);
+        std::snprintf(line, sizeof(line),
+                      "perf parts: levels+muffle %.1f / %.1f us, reading cars %.1f / %.1f us, open-air %.1f / %.1f us "
+                      "(average / worst)",
+                      g_cost.part[0] / g_cost.scans, g_cost.partWorst[0], g_cost.part[1] / g_cost.scans,
+                      g_cost.partWorst[1], g_cost.part[2] / g_cost.scans, g_cost.partWorst[2]);
+        Log(line);
+        std::snprintf(line, sizeof(line), "cars: %u reads, %u found as vehicles, %u open", g_carsRead, g_carsFound,
+                      g_carsOpen);
+        Log(line);
+        g_carsRead = g_carsFound = g_carsOpen = 0;
+        std::string playing = "playing:";
+        for (const auto& [playingId, voice] : g_voices)
+        {
+            char entry[64];
+            std::snprintf(entry, sizeof(entry), " %llx %+.1f dB open %.2f;", static_cast<unsigned long long>(voice.key),
+                          voice.levelDb, OpennessOf(voice));
+            playing += entry;
+        }
+        Log(playing);
+    }
+    g_cost = ScanCost{};
+    g_cost.next = now + 10000;
+}
+#endif
+} // namespace atr
