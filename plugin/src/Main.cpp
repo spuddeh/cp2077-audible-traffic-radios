@@ -485,20 +485,68 @@ void ReadTuning()
 }
 #endif
 
+#ifdef ATR_TUNE
+// Tuning build only: the voice scan's own cost, logged every 10 s as scans, average and worst time per scan, and
+// the most voices seen in one scan.
+struct ScanCost
+{
+    uint64_t scans = 0;
+    double total = 0.0;
+    double worst = 0.0;
+    uint32_t voices = 0;
+    uint64_t next = 0;
+};
+ScanCost g_cost;
+
+void TimedLevelVoices()
+{
+    static const double toMicros = []
+    {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return 1e6 / static_cast<double>(f.QuadPart);
+    }();
+    LARGE_INTEGER a, b;
+    QueryPerformanceCounter(&a);
+    LevelVoices();
+    QueryPerformanceCounter(&b);
+    const double us = static_cast<double>(b.QuadPart - a.QuadPart) * toMicros;
+    ++g_cost.scans;
+    g_cost.total += us;
+    g_cost.worst = std::fmax(g_cost.worst, us);
+    g_cost.voices = (std::max)(g_cost.voices, static_cast<uint32_t>(g_levelled.size()));
+    const uint64_t now = GetTickCount64();
+    if (now < g_cost.next)
+    {
+        return;
+    }
+    if (g_cost.next)
+    {
+        char line[160];
+        std::snprintf(line, sizeof(line), "perf: %llu scans, average %.1f us, worst %.1f us, up to %u voices",
+                      static_cast<unsigned long long>(g_cost.scans), g_cost.total / g_cost.scans, g_cost.worst,
+                      g_cost.voices);
+        Log(line);
+    }
+    g_cost = ScanCost{};
+    g_cost.next = now + 10000;
+}
+#endif
+
 // Once a second until the radio bank is loaded and the mixer set; the bank stays loaded for the session, save
-// loads and the main menu included, so one write holds. After that, every 250 ms, each new radio voice gets its
+// loads and the main menu included, so one write holds. After that, every frame, each new radio voice gets its
 // level.
 bool OnUpdate(RED4ext::CGameApplication*)
 {
     static bool mixerDone = false;
     static uint64_t next = 0;
-    const uint64_t now = GetTickCount64();
-    if (now < next)
-    {
-        return false;
-    }
     if (!mixerDone)
     {
+        const uint64_t now = GetTickCount64();
+        if (now < next)
+        {
+            return false;
+        }
         next = now + 1000;
         float found = 0.0f;
         switch (SetMixerVolume(g_levelTop, g_levelTop, &found))
@@ -516,11 +564,12 @@ bool OnUpdate(RED4ext::CGameApplication*)
         }
         return false;
     }
-    next = now + 250;
 #ifdef ATR_TUNE
     ReadTuning();
-#endif
+    TimedLevelVoices();
+#else
     LevelVoices();
+#endif
     return false;
 }
 } // namespace
