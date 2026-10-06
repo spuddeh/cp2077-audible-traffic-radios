@@ -573,22 +573,34 @@ void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
 }
 
 // --- 6. open-air cars ---
-// A traffic car with a seat door open or torn off, a window down, broken glass, or no side windows plays its radio
-// without the receiver's EQ: its own speakers, heard through the opening. Every 250 ms each car with a radio voice is read
-// through RTTI (ScriptGameInstance.FindEntityByID on the emitter's entity id, then GetVehiclePS and GetDoorState /
+// Each traffic car with a radio voice gets an openness from 0 to 1: a weight per window down, door open, door torn
+// off and shattered pane, added up, or 1 for a car with no side windows. Every 250 ms the car is read through RTTI
+// (ScriptGameInstance.FindEntityByID on the emitter's entity id, then GetVehiclePS and GetDoorState /
 // GetWindowState for seats 0 to 3); its record's hasSideWindows and player_audio_resource are read once. A car
-// that left traffic (kind 3) has no entity id and keeps its EQ.
+// that left traffic (kind 3) has no entity id and stays closed.
 //
-// The EQ goes off for that car's Wwise game object only: CAkParameterNodeBase::BypassFX (0x1ade2b0, the setter
-// Wwise's Bypass Effect action uses) takes (node, effect slot, bypass, CAkRegisteredObj*, fromReset), one slot per
-// call, and a voice that starts later on the same game object starts with it.
+// Openness is atr_open_air, a game parameter of this plugin's set on the car's Wwise game object, and the receiver
+// EQs fade with it (section 8): at 1 every band is flat and a car sounds like its own speakers through the opening.
+// The muscle receiver's RoomVerb has no fade and is bypassed for that game object from 0.5 up, through
+// CAkParameterNodeBase::BypassFX (0x1ade2b0: node, effect slot, bypass, CAkRegisteredObj*, fromReset).
 constexpr uint32_t kNpcReceiverSounds[] = {882536694, 381815666, 234614324, 924785061,
                                            329334756, 937325872, 686441992};  // kNpcReceivers' sounds, in order
-constexpr uint32_t kEffectSlots = 2;  // the muscle receiver has two effects, the others one
+constexpr uint32_t kRtpcOpenAir = 1698419250;  // atr_open_air
+constexpr int kMuscleReceiver = 1;              // its RoomVerb is effect slot 0
+constexpr uint32_t kRoomVerbSlot = 0;
+constexpr float kRoomVerbOffAt = 0.5f;
 constexpr int kSeatDoors = 4;         // EVehicleDoor seat_front_left .. seat_back_right
 using AkBypassFxFn = void (*)(uintptr_t aNode, uint32_t aSlot, bool aBypass, uintptr_t aObject, bool aFromReset);
 using AkGetObjFn = uintptr_t (*)(uintptr_t aRegistry, uint64_t aGameObject);
 using AkGameObjectFn = uint64_t (*)(uint32_t aPlayingId);
+using AkSetRtpcFn = int (*)(uint32_t aRtpc, float aValue, uint64_t aGameObject, int32_t aMs, int aCurve,
+                           bool aBypass);
+
+// What each opening adds to a car's openness.
+float g_weightWindow = 0.25f;
+float g_weightDoor = 0.5f;
+float g_weightDetached = 0.75f;
+float g_weightGlass = 0.25f;
 
 bool g_forceOpen = false;  // tuning build: every traffic car open-air
 #ifdef ATR_TUNE
@@ -598,13 +610,14 @@ uint32_t g_carsRead = 0, g_carsFound = 0, g_carsOpen = 0;
 
 struct Car
 {
-    bool open = false;
+    float openness = 0.0f;
     int convertible = -1;  // not read yet
 };
 std::unordered_map<uint64_t, Car> g_cars;  // by entity id
 
-// The bypass this plugin set, by game object and receiver sound.
-std::map<std::pair<uint64_t, uint32_t>, bool> g_bypass;
+// The openness this plugin set, by game object, and the muscle RoomVerb bypass, by game object.
+std::unordered_map<uint64_t, float> g_openSet;
+std::unordered_map<uint64_t, bool> g_roomVerbOff;
 
 struct CarRtti
 {
@@ -688,7 +701,8 @@ GlassShatteredFn GlassCheck()
     return offsets ? shattered : nullptr;
 }
 
-bool SafeGlassBroken(GlassShatteredFn aShattered, uintptr_t aVehicle)
+// Shattered panes, windshield included.
+uint32_t SafeGlassBroken(GlassShatteredFn aShattered, uintptr_t aVehicle)
 {
     __try
     {
@@ -696,27 +710,25 @@ bool SafeGlassBroken(GlassShatteredFn aShattered, uintptr_t aVehicle)
         const auto data = destruction ? Read<uintptr_t>(destruction) : 0;
         if (!data)
         {
-            return false;
+            return 0;
         }
+        uint32_t broken = 0;
         const auto panes = Read<uintptr_t>(data + 0x298);
         const auto count = Read<uint32_t>(data + 0x2a4);
         for (uint32_t i = 0; panes && i < count && i < 32; ++i)
         {
-            if (aShattered(panes + i * 0x30))
-            {
-                return true;
-            }
+            broken += aShattered(panes + i * 0x30) ? 1 : 0;
         }
         const auto windshield = Read<uintptr_t>(data + 0x2a8);
-        return windshield && aShattered(windshield);
+        return broken + (windshield && aShattered(windshield) ? 1 : 0);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        return false;
+        return 0;
     }
 }
 
-bool CarIsOpen(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint64_t aEntityId, Car& aCar)
+float CarOpenness(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint64_t aEntityId, Car& aCar)
 {
     RED4ext::ent::EntityID id(aEntityId);
     RED4ext::Handle<RED4ext::IScriptable> entity;
@@ -726,7 +738,7 @@ bool CarIsOpen(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint64_
     if (!RED4ext::ExecuteFunction(static_cast<void*>(nullptr), aRtti.find, &entity, args) || !entity ||
         !entity->GetType()->IsA(aRtti.vehicle))
     {
-        return false;
+        return 0.0f;
     }
 #ifdef ATR_TUNE
     ++g_carsFound;
@@ -739,29 +751,25 @@ bool CarIsOpen(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint64_
     }
     if (aCar.convertible == 1)
     {
-        return true;
+        return 1.0f;
     }
     static const auto shattered = GlassCheck();
-    if (shattered && SafeGlassBroken(shattered, reinterpret_cast<uintptr_t>(entity.instance)))
-    {
-        return true;
-    }
+    float open = shattered ? g_weightGlass * SafeGlassBroken(shattered, reinterpret_cast<uintptr_t>(entity.instance))
+                           : 0.0f;
     RED4ext::Handle<RED4ext::IScriptable> ps;
-    if (!RED4ext::ExecuteFunction(entity.instance, aRtti.ps, &ps) || !ps)
+    if (RED4ext::ExecuteFunction(entity.instance, aRtti.ps, &ps) && ps)
     {
-        return false;
-    }
-    for (int door = 0; door < kSeatDoors; ++door)
-    {
-        if (StateOf(ps.instance, aRtti.door, door) != 0 || StateOf(ps.instance, aRtti.window, door) != 0)
+        for (int door = 0; door < kSeatDoors; ++door)
         {
-            return true;
+            const uint8_t state = StateOf(ps.instance, aRtti.door, door);
+            open += state == 2 ? g_weightDetached : state == 1 ? g_weightDoor : 0.0f;
+            open += StateOf(ps.instance, aRtti.window, door) != 0 ? g_weightWindow : 0.0f;
         }
     }
-    return false;
+    return std::fmin(1.0f, open);
 }
 
-// Every 250 ms on the game thread: whether each car with a radio voice is open.
+// Every 250 ms on the game thread: how open each car with a radio voice is.
 void ReadCars()
 {
     static uint64_t next = 0;
@@ -805,26 +813,32 @@ void ReadCars()
     for (const auto key : cars)
     {
         auto& car = g_cars[key];
-        car.open = CarIsOpen(rtti, game, key, car);
+        car.openness = CarOpenness(rtti, game, key, car);
 #ifdef ATR_TUNE
         ++g_carsRead;
-        g_carsOpen += car.open ? 1 : 0;
+        g_carsOpen += car.openness > 0.0f ? 1 : 0;
 #endif
     }
 }
 
-bool WantsOpen(const LiveVoice& aVoice)
+float OpennessOf(const LiveVoice& aVoice)
 {
     if (g_forceOpen)
     {
-        return true;
+        return 1.0f;
     }
     const auto car = aVoice.car ? g_cars.find(aVoice.key) : g_cars.end();
-    return car != g_cars.end() && car->second.open;
+    return car != g_cars.end() ? car->second.openness : 0.0f;
+}
+
+bool Differs(const std::unordered_map<uint64_t, float>& aSet, uint64_t aGameObject, float aValue)
+{
+    const auto have = aSet.find(aGameObject);
+    return have == aSet.end() ? aValue > 0.0f : std::fabs(have->second - aValue) > 0.01f;
 }
 
 bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uintptr_t aRegistry, uint64_t aGameObject, uint32_t aSound,
-                bool aOn)
+                uint32_t aSlot, bool aOn)
 {
     __try
     {
@@ -834,15 +848,24 @@ bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uintptr_t aRegistry, u
         {
             return false;
         }
-        for (uint32_t slot = 0; slot < kEffectSlots; ++slot)
-        {
-            aBypass(node, slot, aOn, object, false);
-        }
+        aBypass(node, aSlot, aOn, object, false);
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
         return false;
+    }
+}
+
+int SafeSetRtpc(AkSetRtpcFn aSet, uint32_t aRtpc, float aValue, uint64_t aGameObject)
+{
+    __try
+    {
+        return aSet(aRtpc, aValue, aGameObject, 250, kCurveLinear, false);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
     }
 }
 
@@ -870,7 +893,7 @@ bool SafeObjectGone(AkGetObjFn aGetObj, uintptr_t aRegistry, uint64_t aGameObjec
     }
 }
 
-// Every frame: Wwise's lock is tried only when a voice's game object is unknown or its car changed state.
+// Every frame: Wwise's lock is tried only when a voice's game object is unknown or its car's openness changed.
 void OpenAir()
 {
     static const auto bypass =
@@ -878,6 +901,7 @@ void OpenAir()
     static const auto getObj =
         AtRva<AkGetObjFn>(0x1b3b230, {0x44, 0x8B, 0x41, 0x30, 0x4C, 0x8B, 0xCA, 0x45, 0x85, 0xC0});
     static const auto gameObject = AtRva<AkGameObjectFn>(0x1ad2680, {0x8B, 0xD1, 0x48, 0x8B, 0x0D});
+    static const auto setRtpc = AtRva<AkSetRtpcFn>(0x1acf570, {0x48, 0x83, 0xEC, 0x48, 0x0F, 0xB6, 0x44, 0x24});
     static const auto lock = WwiseLock();
     static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     static bool stopped = false;
@@ -886,10 +910,10 @@ void OpenAir()
     {
         return;
     }
-    if (!bypass || !getObj || !gameObject || !lock)
+    if (!bypass || !getObj || !gameObject || !setRtpc || !lock)
     {
         stopped = true;
-        Log("open-air cars: the effect bypass is not this game build's - every car keeps its EQ");
+        Log("open-air cars: the Wwise calls are not this game build's - every car stays closed");
         return;
     }
     const uint64_t now = GetTickCount64();
@@ -901,13 +925,11 @@ void OpenAir()
         {
             break;
         }
-        if (voice.gameObject == ~0ull)
-        {
-            pending = true;
-            break;
-        }
-        const auto have = g_bypass.find({voice.gameObject, kNpcReceiverSounds[voice.receiver]});
-        pending = WantsOpen(voice) != (have != g_bypass.end() && have->second);
+        const float open = OpennessOf(voice);
+        const auto off = g_roomVerbOff.find(voice.gameObject);
+        pending = voice.gameObject == ~0ull || Differs(g_openSet, voice.gameObject, open) ||
+                  (voice.receiver == kMuscleReceiver &&
+                   (open >= kRoomVerbOffAt) != (off != g_roomVerbOff.end() && off->second));
     }
     if (!pending || !TryEnterCriticalSection(lock))
     {
@@ -926,20 +948,31 @@ void OpenAir()
             continue;
         }
         live.insert(voice.gameObject);
-        const uint32_t sound = kNpcReceiverSounds[voice.receiver];
-        const bool want = WantsOpen(voice);
-        auto& have = g_bypass[{voice.gameObject, sound}];
-        if (have != want && SafeBypass(bypass, getObj, registry, voice.gameObject, sound, want))
+        const float open = OpennessOf(voice);
+        if (Differs(g_openSet, voice.gameObject, open) &&
+            SafeSetRtpc(setRtpc, kRtpcOpenAir, open, voice.gameObject) == 1)
         {
-            have = want;
+            g_openSet[voice.gameObject] = open;
+        }
+        if (voice.receiver == kMuscleReceiver)
+        {
+            const bool want = open >= kRoomVerbOffAt;
+            auto& have = g_roomVerbOff[voice.gameObject];
+            if (have != want && SafeBypass(bypass, getObj, registry, voice.gameObject,
+                                           kNpcReceiverSounds[kMuscleReceiver], kRoomVerbSlot, want))
+            {
+                have = want;
+            }
         }
     }
     if (sweep)
     {
-        // A game object that is gone takes its bypass with it.
-        std::erase_if(g_bypass, [&](const auto& aEntry) {
-            return !live.contains(aEntry.first.first) && SafeObjectGone(getObj, registry, aEntry.first.first);
-        });
+        // A game object that is gone takes its parameter value and bypass with it.
+        const auto gone = [&](uint64_t aObject) {
+            return !live.contains(aObject) && SafeObjectGone(getObj, registry, aObject);
+        };
+        std::erase_if(g_openSet, [&](const auto& aEntry) { return gone(aEntry.first); });
+        std::erase_if(g_roomVerbOff, [&](const auto& aEntry) { return gone(aEntry.first); });
         nextSweep = now + 5000;
     }
     LeaveCriticalSection(lock);
@@ -982,6 +1015,114 @@ int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDe
     }
 }
 
+// --- 8. the receiver EQs fade with openness ---
+// Each NPC receiver's Parametric EQ gets curves on atr_open_air that bring it flat at 1: every shelf and peak gain
+// to 0 dB, every notch narrowed to Q 30, the output level to 0 dB. The attach is CAkFxBase's own (0x1b50b20, the
+// one a bank load calls for an effect's RTPC): (effect, curve description, points), 1 on success, and it reaches
+// effect instances already playing. Effects sit in g_pIndex's table 9, the indexed pointer being the object (vtable
+// CAkFxCustom 0x2f75ac0). A Parametric EQ parameter is band * 5 + (0 type, 1 gain, 2 frequency, 3 Q, 4 on), and 15
+// the output level.
+struct EqFade
+{
+    uint32_t fx;
+    uint8_t type[3];  // 3 notch, 4 low shelf, 5 high shelf, 6 peaking
+    float gain[3];
+    float q[3];
+    bool on[3];
+    float output;
+};
+constexpr EqFade kEqFades[] = {
+    {828314749, {4, 3, 5}, {-5.5f, -24.0f, -24.0f}, {1.0f, 0.5f, 1.0f}, {true, true, true}, 4.0f},   // lowend
+    {600002266, {4, 6, 5}, {6.5f, 6.0f, -24.0f}, {1.0f, 0.5f, 0.5f}, {true, true, true}, 3.0f},      // muscle
+    {145669955, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 0.0f},      // sports
+    {869899093, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f},      // suv
+    {735462065, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f},      // truck
+    {947417206, {6, 3, 5}, {8.0f, 3.5f, -20.0f}, {0.5f, 1.0f, 0.5f}, {true, true, true}, 2.0f},      // hyper
+    {364560772, {4, 6, 5}, {-24.0f, 0.0f, -24.0f}, {1.0f, 1.0f, 1.0f}, {true, false, true}, 0.0f},   // police
+};
+constexpr uint8_t kNotch = 3;
+constexpr float kOpenNotchQ = 30.0f;
+using AkFxAttachRtpcFn = int (*)(uintptr_t aFx, const AkCurveDesc* aDesc, const AkCurvePoint* aPoints);
+
+uintptr_t SafeFindFx(uint32_t aId)
+{
+    static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    __try
+    {
+        const auto index = Read<uintptr_t>(base + 0x339f7b8);
+        const auto table = index ? index + 9 * 0x58 : 0;
+        const auto buckets = table ? Read<uintptr_t>(table + 0x40) : 0;
+        const auto count = table ? Read<uint32_t>(table + 0x48) : 0;
+        if (!buckets || !count)
+        {
+            return 0;
+        }
+        for (auto fx = Read<uintptr_t>(buckets + (aId % count) * 8); fx; fx = Read<uintptr_t>(fx + 0x8))
+        {
+            if (Read<uint32_t>(fx + 0x10) == aId)
+            {
+                return Read<uintptr_t>(fx) == base + 0x2f75ac0 ? fx : 0;
+            }
+        }
+        return 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+int SafeFxAttach(AkFxAttachRtpcFn aAttach, uintptr_t aFx, const AkCurveDesc& aDesc, const AkCurvePoint* aPoints)
+{
+    __try
+    {
+        return aAttach(aFx, &aDesc, aPoints);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
+
+// Called under Wwise's lock. Returns the curves attached and the curves tried.
+std::pair<int, int> AttachEqFades()
+{
+    static const auto attach =
+        AtRva<AkFxAttachRtpcFn>(0x1b50b20, {0x40, 0x55, 0x56, 0x48, 0x83, 0xEC, 0x38, 0x48, 0x8B, 0xF1, 0x48, 0xC7});
+    int done = 0, tried = 0;
+    uint32_t curveId = 0xA7710000;
+    for (const auto& eq : kEqFades)
+    {
+        const uintptr_t fx = attach ? SafeFindFx(eq.fx) : 0;
+        const auto add = [&](uint32_t aParameter, uint8_t aAccumulation, uint8_t aScaling, float aFrom, float aTo) {
+            const AkCurvePoint points[] = {{0.0f, aFrom, kCurveLinear}, {1.0f, aTo, kCurveLinear}};
+            const AkCurveDesc desc{0, aAccumulation, aScaling, 0, kRtpcOpenAir, aParameter, curveId++, 2};
+            ++tried;
+            done += fx && SafeFxAttach(attach, fx, desc, points) == 1 ? 1 : 0;
+        };
+        for (uint32_t band = 0; band < 3; ++band)
+        {
+            if (!eq.on[band])
+            {
+                continue;
+            }
+            if (eq.type[band] == kNotch)
+            {
+                add(band * 5 + 3, 1, 0, eq.q[band], kOpenNotchQ);  // exclusive, linear
+            }
+            else
+            {
+                add(band * 5 + 1, 2, 2, 0.0f, std::pow(10.0f, -eq.gain[band] / 20.0f) - 1.0f);  // additive, dB
+            }
+        }
+        if (eq.output != 0.0f)
+        {
+            add(15, 2, 2, 0.0f, std::pow(10.0f, -eq.output / 20.0f) - 1.0f);
+        }
+    }
+    return {done, tried};
+}
+
 void AttachOcclusion()
 {
     static const auto attach =
@@ -1003,7 +1144,9 @@ void AttachOcclusion()
     const uintptr_t mixer = SafeFindObject(kNpcRadioMixer);
     const int a = mixer ? SafeAttach(attach, mixer, volumeDesc, volume) : 0;
     const int b = mixer ? SafeAttach(attach, mixer, lowPassDesc, lowPass) : 0;
+    const auto [faded, fades] = AttachEqFades();
     lockOff(critical);
+    Log("open-air cars: " + std::to_string(faded) + " of " + std::to_string(fades) + " EQ fade curves attached");
     Log(a == 1 && b == 1 ? "walls muffle traffic radios: occlusion attached to the NPC car radio mixer"
                          : "the occlusion curves did not attach - walls do not muffle traffic radios");
 }
@@ -1011,7 +1154,8 @@ void AttachOcclusion()
 #ifdef ATR_TUNE
 // Tuning build only: atr_tune.txt beside the DLL, read every 2 s. Lines `levels <bottom dB> <top dB>` and
 // `muffle <dB> <low-pass>`. A change writes the mixer again on the next frame; a levels change also levels every
-// live voice again. `open 1` treats every traffic car as open-air, for comparing by ear.
+// live voice again. `open 1` treats every traffic car as fully open, for comparing by ear; `weights <window>
+// <door> <torn-off door> <pane>` sets what each opening adds to a car's openness.
 void ReadTuning()
 {
     static uint64_t next = 0;
@@ -1035,18 +1179,31 @@ void ReadTuning()
     }
     float bottom = g_levelBottom, top = g_levelTop, muffleDb = g_muffleDb, muffleLpf = g_muffleLpf;
     int open = g_forceOpen ? 1 : 0;
+    float window = g_weightWindow, door = g_weightDoor, detached = g_weightDetached, pane = g_weightGlass;
     char text[128];
     while (std::fgets(text, sizeof(text), f))
     {
         std::sscanf(text, " levels %f %f", &bottom, &top);
         std::sscanf(text, " muffle %f %f", &muffleDb, &muffleLpf);
         std::sscanf(text, " open %d", &open);
+        std::sscanf(text, " weights %f %f %f %f", &window, &door, &detached, &pane);
     }
     std::fclose(f);
+    if (window != g_weightWindow || door != g_weightDoor || detached != g_weightDetached || pane != g_weightGlass)
+    {
+        g_weightWindow = window;
+        g_weightDoor = door;
+        g_weightDetached = detached;
+        g_weightGlass = pane;
+        char weights[128];
+        std::snprintf(weights, sizeof(weights), "tune: openness window %.2f, door %.2f, torn-off door %.2f, pane %.2f",
+                      window, door, detached, pane);
+        Log(weights);
+    }
     if ((open != 0) != g_forceOpen)
     {
         g_forceOpen = open != 0;
-        Log(g_forceOpen ? "tune: every traffic car open-air" : "tune: open-air by doors and windows");
+        Log(g_forceOpen ? "tune: every traffic car fully open" : "tune: openness from doors, windows and glass");
     }
     const bool levels = bottom != g_levelBottom || top != g_levelTop;
     const bool muffle = muffleDb != g_muffleDb || muffleLpf != g_muffleLpf;
