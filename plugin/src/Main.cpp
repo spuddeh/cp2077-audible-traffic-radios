@@ -14,7 +14,7 @@
 //      range. The receivers, their EQ, distance falloff and bus stay the game's.
 //   4. From inside a car in first person, the same mixer is turned down and low-passed, as the game already does
 //      for traffic engines but not for radios.
-//   5. A traffic car with a door open or torn off, a window down, or no side windows plays its radio without the
+//   5. A traffic car with a door open or torn off, a window down, broken glass or no side windows plays its radio without the
 //      receiver's EQ, for that car only.
 //   6. Walls muffle traffic radios: the NPC mixer gets the world radio's two occlusion curves.
 //
@@ -573,8 +573,8 @@ void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
 }
 
 // --- 6. open-air cars ---
-// A traffic car with a seat door open or torn off, a window down, or no side windows plays its radio without the
-// receiver's EQ: its own speakers, heard through the opening. Every 250 ms each car with a radio voice is read
+// A traffic car with a seat door open or torn off, a window down, broken glass, or no side windows plays its radio
+// without the receiver's EQ: its own speakers, heard through the opening. Every 250 ms each car with a radio voice is read
 // through RTTI (ScriptGameInstance.FindEntityByID on the emitter's entity id, then GetVehiclePS and GetDoorState /
 // GetWindowState for seats 0 to 3); its record's hasSideWindows and player_audio_resource are read once. A car
 // that left traffic (kind 3) has no entity id and keeps its EQ.
@@ -669,6 +669,53 @@ bool IsConvertible(const RED4ext::TweakDBID& aRecord)
     return false;
 }
 
+// Broken glass: vehicle::BaseObject keeps its game::VehicleDestruction at +0x600, whose data (its first field)
+// lists the panes at +0x298 (count +0x2a4, 0x30 bytes each) and the windshield at +0x2a8. Each pane answers
+// game::VehicleDestruction::Glass::IsShattered (0x273094), the call the save code uses for brokenGlass. The saved
+// brokenGlass itself is only written when the car is saved, so it is not read here.
+using GlassShatteredFn = bool (*)(uintptr_t aGlass);
+
+GlassShatteredFn GlassCheck()
+{
+    static const auto shattered =
+        AtRva<GlassShatteredFn>(0x273094, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x55, 0x48, 0x8B, 0xEC, 0x48, 0x83, 0xEC});
+    // The offsets as the game's own code uses them: OnGlassDestruction reads +0x600, the save code +0x2a4,
+    // +0x298 and +0x2a8.
+    static const bool offsets = AtRva<const uint8_t*>(0x25f84f6, {0x4C, 0x8B, 0x89, 0x00, 0x06, 0x00, 0x00}) &&
+                                AtRva<const uint8_t*>(0x2743cd, {0x39, 0x9A, 0xA4, 0x02, 0x00, 0x00}) &&
+                                AtRva<const uint8_t*>(0x2743df, {0x48, 0x03, 0x8A, 0x98, 0x02, 0x00, 0x00}) &&
+                                AtRva<const uint8_t*>(0x274437, {0x48, 0x8B, 0x88, 0xA8, 0x02, 0x00, 0x00});
+    return offsets ? shattered : nullptr;
+}
+
+bool SafeGlassBroken(GlassShatteredFn aShattered, uintptr_t aVehicle)
+{
+    __try
+    {
+        const auto destruction = Read<uintptr_t>(aVehicle + 0x600);
+        const auto data = destruction ? Read<uintptr_t>(destruction) : 0;
+        if (!data)
+        {
+            return false;
+        }
+        const auto panes = Read<uintptr_t>(data + 0x298);
+        const auto count = Read<uint32_t>(data + 0x2a4);
+        for (uint32_t i = 0; panes && i < count && i < 32; ++i)
+        {
+            if (aShattered(panes + i * 0x30))
+            {
+                return true;
+            }
+        }
+        const auto windshield = Read<uintptr_t>(data + 0x2a8);
+        return windshield && aShattered(windshield);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 bool CarIsOpen(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint64_t aEntityId, Car& aCar)
 {
     RED4ext::ent::EntityID id(aEntityId);
@@ -691,6 +738,11 @@ bool CarIsOpen(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint64_
         aCar.convertible = IsConvertible(record) ? 1 : 0;
     }
     if (aCar.convertible == 1)
+    {
+        return true;
+    }
+    static const auto shattered = GlassCheck();
+    if (shattered && SafeGlassBroken(shattered, reinterpret_cast<uintptr_t>(entity.instance)))
     {
         return true;
     }
@@ -728,6 +780,10 @@ void ReadCars()
         {
             Log("open-air cars: the vehicle functions are not this game build's - every car keeps its EQ");
             return;
+        }
+        if (!GlassCheck())
+        {
+            Log("open-air cars: broken glass is not this game build's - doors, windows and convertibles only");
         }
     }
     auto* engine = RED4ext::CGameEngine::Get();
