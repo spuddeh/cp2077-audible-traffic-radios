@@ -335,6 +335,7 @@ struct LiveVoice
     uint8_t receiver;
     bool car;  // the key is the car's entity id
     uint64_t gameObject = ~0ull;
+    float levelDb = 0.0f;  // on the mixer, the top of the range less the car's share
 };
 std::unordered_map<uint32_t, LiveVoice> g_voices;
 uint32_t g_round = 0;
@@ -477,10 +478,18 @@ void LevelVoices()
         it->second = g_round;
         if (added)
         {
-            g_voices[voices[i].playingId] = LiveVoice{voices[i].key, voices[i].receiver, voices[i].car};
+            const float lower = span * (1.0f - ShareOf(voices[i].key));
+            g_voices[voices[i].playingId] =
+                LiveVoice{voices[i].key, voices[i].receiver, voices[i].car, ~0ull, g_levelTop + lower};
             // Bypass the parameter's own smoothing, which is built for a car's speed: the level applies at once.
-            setRtpc(kRtpcEngageMovingFaster, CurveValueFor(span * (1.0f - ShareOf(voices[i].key))),
-                    voices[i].playingId, 0, kCurveLinear, true);
+            setRtpc(kRtpcEngageMovingFaster, CurveValueFor(lower), voices[i].playingId, 0, kCurveLinear, true);
+#ifdef ATR_TUNE
+            static const char* const kReceiverNames[] = {"lowend", "muscle", "sports", "suv", "truck", "hyper", "police"};
+            char line[128];
+            std::snprintf(line, sizeof(line), "level: car %llx %s %+.1f dB", static_cast<unsigned long long>(voices[i].key),
+                          kReceiverNames[voices[i].receiver], g_levelTop + lower);
+            Log(line);
+#endif
         }
     }
     std::erase_if(g_levelled, [](const auto& aEntry) { return aEntry.second != g_round; });
@@ -1349,6 +1358,15 @@ void TimedLevelVoices()
                       g_carsOpen);
         Log(line);
         g_carsRead = g_carsFound = g_carsOpen = 0;
+        std::string playing = "playing:";
+        for (const auto& [playingId, voice] : g_voices)
+        {
+            char entry[64];
+            std::snprintf(entry, sizeof(entry), " %llx %+.1f dB open %.2f;", static_cast<unsigned long long>(voice.key),
+                          voice.levelDb, OpennessOf(voice));
+            playing += entry;
+        }
+        Log(playing);
     }
     g_cost = ScanCost{};
     g_cost.next = now + 10000;
