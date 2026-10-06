@@ -558,13 +558,13 @@ void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
 // --- 6. open-air test (tuning build only) ---
 // `open 1` in atr_tune.txt switches every traffic radio's receiver EQ off for that car's game object only; `open 0`
 // switches it back on. CAkParameterNodeBase::BypassFX (0x1ade2b0, the setter Wwise's Bypass Effect action uses)
-// takes (node, slot mask, bypass, CAkRegisteredObj*, fromReset). The object is the voice's game object
+// takes (node, effect slot, bypass, CAkRegisteredObj*, fromReset), one slot per call. The object is the voice's game object
 // (Query::GetGameObjectFromPlayingID, 0x1ad2680) looked up with CAkRegistryMgr::GetObj (0x1b3b230, g_pRegistryMgr
 // at 0x339f7b0). Every other car playing the same receiver keeps its EQ. Runs under Wwise's lock, tried.
 constexpr uint32_t kNpcReceiverSounds[] = {882536694, 381815666, 234614324, 924785061,
                                            329334756, 937325872, 686441992};  // kNpcReceivers' sounds, in order
-constexpr uint32_t kAllSlots = 0x0F;
-using AkBypassFxFn = void (*)(uintptr_t aNode, uint32_t aMask, bool aBypass, uintptr_t aObject, bool aFromReset);
+constexpr uint32_t kEffectSlots = 2;  // the muscle receiver has two effects, the others one
+using AkBypassFxFn = void (*)(uintptr_t aNode, uint32_t aSlot, bool aBypass, uintptr_t aObject, bool aFromReset);
 using AkGetObjFn = uintptr_t (*)(uintptr_t aRegistry, uint64_t aGameObject);
 using AkGameObjectFn = uint64_t (*)(uint32_t aPlayingId);
 
@@ -590,7 +590,10 @@ bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uint64_t aGameObject, 
         {
             return false;
         }
-        aBypass(node, kAllSlots, aOn, object, false);
+        for (uint32_t slot = 0; slot < kEffectSlots; ++slot)
+        {
+            aBypass(node, slot, aOn, object, false);
+        }
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -609,7 +612,10 @@ bool SafeBypassAll(AkBypassFxFn aBypass, uint32_t aSound, bool aOn)
         {
             return false;
         }
-        aBypass(node, kAllSlots, aOn, 0, false);
+        for (uint32_t slot = 0; slot < kEffectSlots; ++slot)
+        {
+            aBypass(node, slot, aOn, 0, false);
+        }
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
