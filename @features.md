@@ -1,5 +1,22 @@
 # Features - Audible Traffic Radios
 
+## Enabled or expanded
+Every feature is one of two kinds, and a new one is added here as one or the other.
+- **Enabled:** the shipped game already has it (data, sounds, code) and it is held back or broken; the mod makes it
+  work and adds nothing of its own.
+- **Expanded:** new behaviour, built from the game's own pieces where it can be.
+
+| Feature | Kind | What is the game's own |
+| --- | --- | --- |
+| Traffic-only stations play | Enabled | the stations, receivers and car radio voicing; one gate byte stops them |
+| Other radios play while the player's car radio is on | Enabled | the stations; one rule silences them |
+| Morro Rock on the six misspelt lists | Enabled | the lists; a typo in them |
+| A level per car (0 to +9 dB, weighted to the middle) | Expanded | the mixer and its `veh_engage_moving_faster` control |
+| Muffled from inside a car | Expanded | `veh_interior` and vanilla's traffic-noise values (-4 dB, low-pass 25) |
+| Muffled by walls | Expanded | the world radio's own `game_occlusion` curves |
+| Open-air cars, graded | Expanded | each car class's EQ (only its treble shelf moves) and the doors, windows and glass the game tracks |
+| Growl FM, Impulse, Dark Star, Royal Blue on themed traffic lists | Expanded | the stations and the list mechanism; the theming follows vanilla's (Delamain, Villefort) |
+
 ## Implemented
 - [x] A station that only traffic cars are tuned to plays (radio mode 1: one byte in the station's silent
   predicate, `0x2a7831`).

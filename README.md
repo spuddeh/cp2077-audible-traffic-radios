@@ -5,14 +5,29 @@ game's own car radio sound.
 
 ## What it changes
 
+Some of this is the game's own and only held back; some is new.
+
+**The game's own, made to work:**
+
 - **Traffic radios play.** A station that only traffic cars are tuned to plays. Without this, a traffic car's
   radio is tuned but its station never plays.
 - **Other radios keep playing while your car radio is on.** The game otherwise silences every station your own
   car radio is not tuned to: traffic, world radios and street music.
+- **Morro Rock on every list that names it.** Six cars' station lists misspell Morro Rock, so those cars never
+  play it.
+
+**New:**
+
 - **Each car has its own level.** Traffic radios play between +0 and +9 dB over the game's own car radio level,
   most near the middle and a few quiet or loud. A car keeps its level whenever its radio restarts.
 - **Muffled from inside a car.** In first person in a car, traffic radios are muffled the way the game already
   muffles traffic noise (-4 dB and a low-pass filter). Third person, or broken glass, lets more through.
+- **Muffled by walls.** Walls muffle traffic radios the way they muffle the game's other radios.
+- **Open cars sound open.** A car with a door open or torn off, a window down or broken, or no roof, sounds less
+  muffled and a little louder the more of it is open. Each car class keeps its own sound.
+- **More stations on traffic.** Growl FM, Impulse, Dark Star and Royal Blue Radio, which no traffic car plays in
+  the base game, are on themed cars: Growl FM on most cars, Impulse on sports cars, Dark Star on gang and nomad
+  cars, Royal Blue Radio on executive cars and limousines.
 
 What you hear is the game's own car radio sound: each car class's own filtering, so it sounds like music from
 inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m. Combat and police
