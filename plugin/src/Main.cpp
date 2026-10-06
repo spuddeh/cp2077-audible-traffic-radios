@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -310,24 +311,30 @@ using AkSetRtpcByPlayingIdFn = int (*)(uint32_t aRtpc, float aValue, uint32_t aP
 
 // Live NPC radio voices by playing id, with the round they were last seen in.
 std::unordered_map<uint32_t, uint32_t> g_levelled;
+#ifdef ATR_TUNE
+// Tuning build only: each live voice's receiver, for the open-air test.
+std::unordered_map<uint32_t, uint8_t> g_voiceReceiver;
+#endif
 uint32_t g_round = 0;
 
-bool IsNpcReceiver(uint64_t aName)
+// The receiver's index in kNpcReceivers, or -1.
+int NpcReceiverIndex(uint64_t aName)
 {
-    for (const auto name : kNpcReceivers)
+    for (int i = 0; i < static_cast<int>(std::size(kNpcReceivers)); ++i)
     {
-        if (name == aName)
+        if (kNpcReceivers[i] == aName)
         {
-            return true;
+            return i;
         }
     }
-    return false;
+    return -1;
 }
 
 struct Voice
 {
     uint32_t playingId;
-    uint64_t key;  // the car's entity id, or the playing id
+    uint64_t key;      // the car's entity id, or the playing id
+    uint8_t receiver;  // index in kNpcReceivers
 };
 
 bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut, uint32_t aMax, uint32_t* aCount)
@@ -354,7 +361,8 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut,
                     continue;
                 }
                 const auto broadcast = Read<uint64_t>(emitter + 0x120);
-                if (!IsNpcReceiver(broadcast))
+                const int receiver = NpcReceiverIndex(broadcast);
+                if (receiver < 0)
                 {
                     continue;
                 }
@@ -371,7 +379,7 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut,
                         {
                             const uint64_t car =
                                 Read<uintptr_t>(emitter) == aTrafficVtbl ? Read<uint64_t>(emitter + 0x138) : 0;
-                            aOut[(*aCount)++] = Voice{id, car ? car : id};
+                            aOut[(*aCount)++] = Voice{id, car ? car : id, static_cast<uint8_t>(receiver)};
                         }
                         break;
                     }
@@ -444,6 +452,9 @@ void LevelVoices()
     {
         auto [it, added] = g_levelled.try_emplace(voices[i].playingId, g_round);
         it->second = g_round;
+#ifdef ATR_TUNE
+        g_voiceReceiver[voices[i].playingId] = voices[i].receiver;
+#endif
         if (added)
         {
             // Bypass the parameter's own smoothing, which is built for a car's speed: the level applies at once.
@@ -452,6 +463,9 @@ void LevelVoices()
         }
     }
     std::erase_if(g_levelled, [](const auto& aEntry) { return aEntry.second != g_round; });
+#ifdef ATR_TUNE
+    std::erase_if(g_voiceReceiver, [](const auto& aEntry) { return !g_levelled.contains(aEntry.first); });
+#endif
 }
 
 // --- 5. muffled from inside a car ---
@@ -541,9 +555,147 @@ void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
 }
 
 #ifdef ATR_TUNE
+// --- 6. open-air test (tuning build only) ---
+// `open 1` in atr_tune.txt switches every traffic radio's receiver EQ off for that car's game object only; `open 0`
+// switches it back on. CAkParameterNodeBase::BypassFX (0x1ade2b0, the setter Wwise's Bypass Effect action uses)
+// takes (node, slot mask, bypass, CAkRegisteredObj*, fromReset). The object is the voice's game object
+// (Query::GetGameObjectFromPlayingID, 0x1ad2680) looked up with CAkRegistryMgr::GetObj (0x1b3b230, g_pRegistryMgr
+// at 0x339f7b0). Every other car playing the same receiver keeps its EQ. Runs under Wwise's lock, tried.
+constexpr uint32_t kNpcReceiverSounds[] = {882536694, 381815666, 234614324, 924785061,
+                                           329334756, 937325872, 686441992};  // kNpcReceivers' sounds, in order
+constexpr uint32_t kAllSlots = 0x0F;
+using AkBypassFxFn = void (*)(uintptr_t aNode, uint32_t aMask, bool aBypass, uintptr_t aObject, bool aFromReset);
+using AkGetObjFn = uintptr_t (*)(uintptr_t aRegistry, uint64_t aGameObject);
+using AkGameObjectFn = uint64_t (*)(uint32_t aPlayingId);
+
+int g_open = 0;         // from atr_tune.txt
+int g_openApplied = 0;  // the value the live voices were last set for
+std::unordered_map<uint32_t, uint64_t> g_openVoices;  // playing id -> game object, voices already handled
+struct Bypassed
+{
+    uint64_t gameObject;
+    uint32_t sound;
+};
+std::vector<Bypassed> g_bypassed;
+
+bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uint64_t aGameObject, uint32_t aSound, bool aOn)
+{
+    static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    __try
+    {
+        const uintptr_t node = SafeFindObject(aSound);
+        const auto registry = Read<uintptr_t>(base + 0x339f7b0);
+        const uintptr_t object = registry ? aGetObj(registry, aGameObject) : 0;
+        if (!node || !object)
+        {
+            return false;
+        }
+        aBypass(node, kAllSlots, aOn, object, false);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+uint64_t SafeGameObject(AkGameObjectFn aGameObject, uint32_t aPlayingId)
+{
+    __try
+    {
+        return aGameObject(aPlayingId);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return ~0ull;
+    }
+}
+
+void OpenAir()
+{
+    static const auto bypass =
+        AtRva<AkBypassFxFn>(0x1ade2b0, {0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x6C, 0x24, 0x20});
+    static const auto getObj =
+        AtRva<AkGetObjFn>(0x1b3b230, {0x44, 0x8B, 0x41, 0x30, 0x4C, 0x8B, 0xCA, 0x45, 0x85, 0xC0});
+    static const auto gameObject = AtRva<AkGameObjectFn>(0x1ad2680, {0x8B, 0xD1, 0x48, 0x8B, 0x0D});
+    static const auto lock = WwiseLock();
+    static bool stopped = false;
+    if (stopped)
+    {
+        return;
+    }
+    if (!bypass || !getObj || !gameObject || !lock)
+    {
+        stopped = true;
+        Log("open: the effect bypass is not this game build's - nothing bypassed");
+        return;
+    }
+    std::erase_if(g_openVoices, [](const auto& aEntry) { return !g_voiceReceiver.contains(aEntry.first); });
+    const bool toggled = g_open != g_openApplied;
+    bool pending = toggled;
+    for (const auto& entry : g_voiceReceiver)
+    {
+        if (pending || !g_open)
+        {
+            break;
+        }
+        pending = !g_openVoices.contains(entry.first);
+    }
+    if (!pending || !TryEnterCriticalSection(lock))
+    {
+        return;
+    }
+    uint32_t done = 0, missed = 0;
+    if (!g_open)
+    {
+        for (const auto& b : g_bypassed)
+        {
+            SafeBypass(bypass, getObj, b.gameObject, b.sound, false) ? ++done : ++missed;
+        }
+        g_bypassed.clear();
+        g_openVoices.clear();
+    }
+    else
+    {
+        for (const auto& [playingId, receiver] : g_voiceReceiver)
+        {
+            if (g_openVoices.contains(playingId))
+            {
+                continue;
+            }
+            const uint64_t object = SafeGameObject(gameObject, playingId);
+            const uint32_t sound = kNpcReceiverSounds[receiver];
+            if (object != ~0ull && SafeBypass(bypass, getObj, object, sound, true))
+            {
+                ++done;
+                const bool known = std::find_if(g_bypassed.begin(), g_bypassed.end(), [&](const Bypassed& b) {
+                                       return b.gameObject == object && b.sound == sound;
+                                   }) != g_bypassed.end();
+                if (!known)
+                {
+                    g_bypassed.push_back({object, sound});
+                }
+            }
+            else
+            {
+                ++missed;
+            }
+            g_openVoices[playingId] = object;
+        }
+    }
+    g_openApplied = g_open;
+    LeaveCriticalSection(lock);
+    char line[128];
+    std::snprintf(line, sizeof(line), "open: %u voices with the EQ %s, %u missed, %zu cars bypassed", done,
+                  g_open ? "off" : "back on", missed, g_bypassed.size());
+    Log(line);
+}
+#endif
+
+#ifdef ATR_TUNE
 // Tuning build only: atr_tune.txt beside the DLL, read every 2 s. Lines `levels <bottom dB> <top dB>` and
 // `muffle <dB> <low-pass>`. A change writes the mixer again on the next frame; a levels change also levels every
-// live voice again.
+// live voice again. `open <0|1>` switches the open-air test.
 void ReadTuning()
 {
     static uint64_t next = 0;
@@ -566,13 +718,20 @@ void ReadTuning()
         return;
     }
     float bottom = g_levelBottom, top = g_levelTop, muffleDb = g_muffleDb, muffleLpf = g_muffleLpf;
+    int open = g_open;
     char text[128];
     while (std::fgets(text, sizeof(text), f))
     {
         std::sscanf(text, " levels %f %f", &bottom, &top);
         std::sscanf(text, " muffle %f %f", &muffleDb, &muffleLpf);
+        std::sscanf(text, " open %d", &open);
     }
     std::fclose(f);
+    if (open != g_open)
+    {
+        g_open = open;
+        Log(open ? "tune: open-air test on" : "tune: open-air test off");
+    }
     const bool levels = bottom != g_levelBottom || top != g_levelTop;
     const bool muffle = muffleDb != g_muffleDb || muffleLpf != g_muffleLpf;
     if (!levels && !muffle)
@@ -620,6 +779,7 @@ void TimedLevelVoices()
     QueryPerformanceCounter(&a);
     LevelVoices();
     Muffle();
+    OpenAir();
     QueryPerformanceCounter(&b);
     const double us = static_cast<double>(b.QuadPart - a.QuadPart) * toMicros;
     ++g_cost.scans;
