@@ -14,16 +14,24 @@
   - [x] Every new voice levelled on the next frame; about 1 µs per frame measured.
 - [x] Muffled from inside a car: the mixer follows the game's `veh_interior` at vanilla's traffic-noise values
   (-4 dB, low-pass 25). Wwise's lock is tried, never waited on.
-- [x] Open-air traffic cars: a car with a seat door open or detached, a window down, broken glass (any pane,
-  `Glass::IsShattered`, `0x273094`), or no side windows
-  (`hasSideWindows` false, or a `targa`/`cabrio` `player_audio_resource`) plays without the receiver EQ, for that
-  car's Wwise game object only (`BypassFX`, `0x1ade2b0`, effect slots 0 and 1); the EQ comes back when it closes.
-  Doors and windows read through RTTI every 250 ms; kind 3 cars keep their EQ.
+- [x] Open-air traffic cars, graded: each car's openness (0 to 1) adds a weight per window down (0.25), door open
+  (0.5), door torn off (0.75) and shattered pane (0.25, `Glass::IsShattered`, `0x273094`); 1 for no side windows
+  (`hasSideWindows` false, or a `targa`/`cabrio` `player_audio_resource`). Doors and windows read through RTTI every
+  250 ms; kind 3 cars stay closed.
+  - [x] Openness is `atr_open_air` (this plugin's own game parameter) on the car's Wwise game object, 250 ms glide.
+  - [x] Only each receiver EQ's treble shelf fades, to 0 dB at 1 (the closed body); bass, mid and reverb bands keep
+    CDPR's sound per car class. Curves attached to the effects at load (`CAkFxBase` `SetRTPC`, `0x1b50b20`):
+    exclusive, absolute, unscaled, five points.
+  - [x] The EQ output takes off the loudness the lift adds (6.9 / 5.9 / 2.4 / 1.0 dB by receiver) and adds 3 dB,
+    so every open car type is 3 dB louder and the balance between types holds.
 - [x] Muffled by walls: the world radio's two `game_occlusion` curves (volume 0 to -12 dB, low-pass 0 to 57)
   attached to the NPC mixer once at load (`SetRTPC` virtual, `0x1adda50`).
 - [x] Every address and byte is verified before use; on any other game build the plugin logs and does nothing.
-- [x] Tuning build (`ATR_TUNE`): `atr_tune.txt` (`levels`, `muffle`, `open 1` for every car open-air) applied
-  live, and every 10 s a `perf:` line and a `cars:` line (reads, found as vehicles, open).
+- [x] Tuning build (`ATR_TUNE`): `atr_tune.txt` (`levels`, `muffle`, `open 1` for every car fully open,
+  `weights <window> <door> <torn-off> <pane>`) applied live; every 10 s a `perf:`, `cars:` and `playing:` line
+  (each car's level and openness); a `level:` line as each radio starts; an EQ view (a `SetParam` hook logging
+  every gain, Q and output the Parametric EQs receive); `atr_live.txt` for the Radio Probe Overlay, which draws
+  each car's receiver, level and openness on it.
 - [x] `docs/HOW-IT-WORKS.md`: the technical write-up for modders.
 
 ## Verified in game (Testing)
@@ -41,12 +49,16 @@
   its driver's window and door were opened from the live bridge and back when closed, three door rounds in a row.
 - 2026-10-06: a Mizutani Shion went open on a shattered pane and stayed open; a Chevalier Emperor went open when
   its front-left door was torn off (both from the live bridge, heard by the user).
+- 2026-10-06: the graded fade, read through the EQ view and heard on sports (Quadra Turbo), truck (Kaukaz Zeya) and
+  low-end (Thorton Galena) cars: the treble shelf steps evenly (-20 to 0, -24 to 0), the other bands hold, one
+  shattered pane and a torn-off door step the same way.
 
 ## Pending checks
 - [ ] The muffling at vanilla's values, by ear.
 
 ## Planned
 - [ ] A preview build for the author of Immersive NPC Car Stereos (Priority: High).
-- [ ] Open-air cars by ear in normal play: whether an open car wants a little low-pass of its own.
+- [ ] Open-air cars by ear in normal play: the weights, the +3 dB rise, muscle and police receivers.
+- [ ] The level ceiling: tried +9 in the tuning file (release default +12); decide and set the default.
 - [ ] A versioned API for Immersive NPC Car Stereos, shaped by that author's feedback.
 - [ ] More station variety on traffic cars.
