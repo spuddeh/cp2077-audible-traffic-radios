@@ -599,6 +599,25 @@ bool SafeBypass(AkBypassFxFn aBypass, AkGetObjFn aGetObj, uint64_t aGameObject, 
     }
 }
 
+// `open 2`: the same setter with no game object, which bypasses the receiver's effects for every car at once.
+bool SafeBypassAll(AkBypassFxFn aBypass, uint32_t aSound, bool aOn)
+{
+    __try
+    {
+        const uintptr_t node = SafeFindObject(aSound);
+        if (!node)
+        {
+            return false;
+        }
+        aBypass(node, kAllSlots, aOn, 0, false);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 uint64_t SafeGameObject(AkGameObjectFn aGameObject, uint32_t aPlayingId)
 {
     __try
@@ -635,7 +654,7 @@ void OpenAir()
     bool pending = toggled;
     for (const auto& entry : g_voiceReceiver)
     {
-        if (pending || !g_open)
+        if (pending || g_open != 1)
         {
             break;
         }
@@ -645,8 +664,18 @@ void OpenAir()
     {
         return;
     }
+    if (toggled && (g_open == 2 || g_openApplied == 2))
+    {
+        uint32_t nodes = 0;
+        for (const auto sound : kNpcReceiverSounds)
+        {
+            nodes += SafeBypassAll(bypass, sound, g_open == 2) ? 1 : 0;
+        }
+        Log(std::string("open: every car's receiver EQ ") + (g_open == 2 ? "off" : "back on") + " on " +
+            std::to_string(nodes) + " of 7 receivers");
+    }
     uint32_t done = 0, missed = 0;
-    if (!g_open)
+    if (g_open != 1)
     {
         for (const auto& b : g_bypassed)
         {
@@ -796,7 +825,7 @@ float SafeMaxOcclusion(AkGetRtpcValueFn aGet, AkGameObjectFn aGameObject)
 #ifdef ATR_TUNE
 // Tuning build only: atr_tune.txt beside the DLL, read every 2 s. Lines `levels <bottom dB> <top dB>` and
 // `muffle <dB> <low-pass>`. A change writes the mixer again on the next frame; a levels change also levels every
-// live voice again. `open <0|1>` switches the open-air test; `occlude 1` attaches the occlusion curves.
+// live voice again. `open <0|1|2>` switches the open-air test (2: every car at once); `occlude 1` attaches the occlusion curves.
 void ReadTuning()
 {
     static uint64_t next = 0;
