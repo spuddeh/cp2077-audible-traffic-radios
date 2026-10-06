@@ -320,6 +320,7 @@ constexpr uint64_t kNpcReceivers[] = {
     RED4ext::FNV1a64("radio_car_truck_npc"),  RED4ext::FNV1a64("radio_car_hyper_npc"),
     RED4ext::FNV1a64("radio_car_police_npc"),
 };
+constexpr const char* kReceiverNames[] = {"lowend", "muscle", "sports", "suv", "truck", "hyper", "police"};
 
 using AkSetRtpcByPlayingIdFn = int (*)(uint32_t aRtpc, float aValue, uint32_t aPlayingId, int32_t aMs, int aCurve,
                                        bool aBypass);
@@ -484,7 +485,6 @@ void LevelVoices()
             // Bypass the parameter's own smoothing, which is built for a car's speed: the level applies at once.
             setRtpc(kRtpcEngageMovingFaster, CurveValueFor(lower), voices[i].playingId, 0, kCurveLinear, true);
 #ifdef ATR_TUNE
-            static const char* const kReceiverNames[] = {"lowend", "muscle", "sports", "suv", "truck", "hyper", "police"};
             char line[128];
             std::snprintf(line, sizeof(line), "level: car %llx %s %+.1f dB", static_cast<unsigned long long>(voices[i].key),
                           kReceiverNames[voices[i].receiver], g_levelTop + lower);
@@ -775,7 +775,7 @@ float CarOpenness(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint
 #ifdef ATR_TUNE
 float OpennessOf(const LiveVoice& aVoice);
 
-// Tuning build only: each car with a radio voice as `<entity id> <level dB> <openness>` in atr_live.txt, in the Radio
+// Tuning build only: each car with a radio voice as `<entity id> <level dB> <openness> <receiver>` in atr_live.txt, in the Radio
 // Probe Overlay's folder when that dev mod is installed, which draws it on the car.
 void WriteOverlay()
 {
@@ -801,8 +801,8 @@ void WriteOverlay()
     {
         if (voice.car && written.insert(voice.key).second)
         {
-            std::fprintf(f, "%llu %.1f %.2f\n", static_cast<unsigned long long>(voice.key), voice.levelDb,
-                         OpennessOf(voice));
+            std::fprintf(f, "%llu %.1f %.2f %s\n", static_cast<unsigned long long>(voice.key), voice.levelDb,
+                         OpennessOf(voice), kReceiverNames[voice.receiver]);
         }
     }
     std::fclose(f);
