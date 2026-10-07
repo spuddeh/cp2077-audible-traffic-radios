@@ -20,6 +20,8 @@
 //   7. Traffic cars can pick the stations no shipped list carries, on themed lists, and Morro Rock is spelt
 //      right on the six lists that misspell it.
 //   8. Combat and police music no longer duck traffic radios: their -96 dB duck on the NPC radio bus is set to 0.
+//   9. Open cars fill more of the street's echo: the receivers' area reverb send rises with openness.
+//  10. The player's own car, heard from outside, plays at the top of the range and follows the Car Radio slider.
 //
 // **Every address is verified before it is used, and a value is written only over the one expected.** On any
 // other game build the plugin logs a line and changes nothing.
@@ -85,6 +87,7 @@ bool OnUpdate(RED4ext::CGameApplication*)
     ReadCars();
     OpenAir();
 #endif
+    OwnCar();
     return false;
 }
 } // namespace atr

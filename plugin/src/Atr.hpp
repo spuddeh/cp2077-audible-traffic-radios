@@ -92,6 +92,7 @@ struct LiveVoice
     bool car;  // the key is the car's entity id
     uint64_t gameObject = ~0ull;
     float levelDb = 0.0f;  // on the mixer, the top of the range less the car's share
+    float ownCarDb = 1.0f;  // the Car Radio slider level set on the player's own car (1: none yet)
 };
 
 using AkGetRtpcValueFn = int (*)(uint32_t aRtpc, uint64_t aGameObject, uint32_t aPlayingId, float* aValue,
@@ -146,6 +147,9 @@ void AttachOcclusion();                                                         
 void ReadCars();                                                                 // OpenAir.cpp
 void OpenAir();                                                                  // OpenAir.cpp
 float OpennessOf(const LiveVoice& aVoice);                                       // OpenAir.cpp
+bool IsPlayerCar(uint64_t aKey);                                                 // OpenAir.cpp
+void OwnCar();                                                                   // Levels.cpp
+int AttachOwnCarCurve(uintptr_t aMixer);                                         // Levels.cpp
 std::pair<int, int> AttachEqFades();                                             // OpenAir.cpp
 std::pair<int, int> AttachReverbSends();                                         // OpenAir.cpp
 void ThemeStations();                                                            // Stations.cpp

@@ -190,4 +190,101 @@ void LevelVoices()
     std::erase_if(g_levelled, [](const auto& aEntry) { return aEntry.second != g_round; });
     std::erase_if(g_voices, [](const auto& aEntry) { return !g_levelled.contains(aEntry.first); });
 }
+
+// --- 10. the player's own car ---
+// The player's own vehicle, while the player is not in it (summoned, or parked with its radio on), plays through
+// the NPC receivers like traffic. Once IsPlayerVehicle names it (OpenAir.cpp), its voice leaves the spread for the top
+// of the range and follows the Car Radio slider the way the player's radio does: volume_music_car_radio (0 to 100,
+// global) through the slider's own curve on the car interior bus (silent, -16, -9, -5 and 0 dB at 0, 25, 50, 75 and
+// 100, linear in amplitude between them), set per voice on this plugin's atr_own_car. A Volume curve on the NPC
+// mixer adds atr_own_car in dB (dB-scaled, points as amplitude - 1, the encoding the occlusion curve reads right);
+// every other voice leaves it at 0.
+constexpr uint32_t kRtpcOwnCar = 3888816778;          // atr_own_car
+constexpr uint32_t kRtpcCarRadioVolume = 2663631704;  // volume_music_car_radio
+constexpr float kSilentDb = -96.0f;
+
+float SliderDb(float aSlider)
+{
+    static const float amplitude[] = {0.0f, 0.1584893f, 0.3548134f, 0.5623413f, 1.0f};
+    const float x = std::fmin(100.0f, std::fmax(0.0f, aSlider)) / 25.0f;
+    const int i = (std::min)(3, static_cast<int>(x));
+    const float a = amplitude[i] + (amplitude[i + 1] - amplitude[i]) * (x - i);
+    return a > 0.0f ? std::fmax(kSilentDb, 20.0f * std::log10(a)) : kSilentDb;
+}
+
+float SafeGlobalRtpc(AkGetRtpcValueFn aGet, uint32_t aRtpc)
+{
+    __try
+    {
+        float value = 0.0f;
+        int scope = 1;  // RTPCValue_Global
+        return aGet(aRtpc, ~0ull, 0, &value, &scope) == 1 ? value : -1.0f;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1.0f;
+    }
+}
+
+// Called under Wwise's lock with the NPC mixer. 1 when the curve attached.
+int AttachOwnCarCurve(uintptr_t aMixer)
+{
+    using AttachFn = int (*)(uintptr_t, const AkCurveDesc*, const AkCurvePoint*);
+    static const auto attach =
+        AtRva<AttachFn>(0x1adda50, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10});
+    static const float db[] = {kSilentDb, -60.0f, -40.0f, -24.0f, -16.0f, -9.0f, -5.0f, -2.0f, 0.0f};
+    AkCurvePoint points[std::size(db)];
+    for (size_t i = 0; i < std::size(db); ++i)
+    {
+        points[i] = {db[i], std::pow(10.0f, db[i] / 20.0f) - 1.0f, kCurveLinear};
+    }
+    const AkCurveDesc desc{0, 2, 2, 0, kRtpcOwnCar, kPropVolume, 0xA7730001, static_cast<uint32_t>(std::size(db))};
+    return attach && aMixer ? attach(aMixer, &desc, points) : 0;
+}
+
+void OwnCar()
+{
+    static const auto get = AtRva<AkGetRtpcValueFn>(0x1ad2c60, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C});
+    static const auto setRtpc =
+        AtRva<AkSetRtpcByPlayingIdFn>(0x1acf6a0, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57});
+    static const auto lock = WwiseLock();
+    if (!get || !setRtpc || !lock)
+    {
+        return;
+    }
+    bool any = false;
+    for (const auto& [playingId, voice] : g_voices)
+    {
+        any = any || (voice.car && IsPlayerCar(voice.key));
+    }
+    if (!any || !TryEnterCriticalSection(lock))
+    {
+        return;
+    }
+    const float slider = SafeGlobalRtpc(get, kRtpcCarRadioVolume);
+    LeaveCriticalSection(lock);
+    if (slider < 0.0f)
+    {
+        return;
+    }
+    const float db = SliderDb(slider);
+    for (auto& [playingId, voice] : g_voices)
+    {
+        if (!voice.car || !IsPlayerCar(voice.key) || std::fabs(voice.ownCarDb - db) < 0.05f)
+        {
+            continue;
+        }
+        setRtpc(kRtpcEngageMovingFaster, CurveValueFor(0.0f), playingId, 0, kCurveLinear, true);
+        setRtpc(kRtpcOwnCar, db, playingId, 0, kCurveLinear, true);
+        voice.ownCarDb = db;
+        voice.levelDb = g_levelTop + db;
+#ifdef ATR_TUNE
+        char line[128];
+        std::snprintf(line, sizeof(line), "own car: %llx Car Radio %.0f, %+.1f dB on the slider, %+.1f dB in all",
+                      static_cast<unsigned long long>(voice.key), slider, db, voice.levelDb);
+        Log(line);
+#endif
+    }
+}
+
 } // namespace atr

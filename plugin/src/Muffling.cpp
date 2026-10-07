@@ -137,9 +137,11 @@ void AttachOcclusion()
     const int b = mixer ? SafeAttach(attach, mixer, lowPassDesc, lowPass) : 0;
     const auto [faded, fades] = AttachEqFades();
     const auto [sent, sends] = AttachReverbSends();
+    const int own = mixer ? AttachOwnCarCurve(mixer) : 0;
     lockOff(critical);
     Log("open-air cars: " + std::to_string(faded) + " of " + std::to_string(fades) + " EQ fade curves attached");
     Log("open-air cars: " + std::to_string(sent) + " of " + std::to_string(sends) + " area reverb curves attached");
+    Log(own == 1 ? "the player's own car follows the Car Radio slider" : "the own-car curve did not attach - the player's car plays at its traffic level");
     Log(a == 1 && b == 1 ? "walls muffle traffic radios: occlusion attached to the NPC car radio mixer"
                          : "the occlusion curves did not attach - walls do not muffle traffic radios");
 }

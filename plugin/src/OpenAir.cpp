@@ -38,6 +38,7 @@ struct Car
 {
     float openness = 0.0f;
     int convertible = -1;  // not read yet
+    int player = -1;       // the player's own vehicle: not read yet
 };
 std::unordered_map<uint64_t, Car> g_cars;  // by entity id
 
@@ -52,6 +53,7 @@ struct CarRtti
     RED4ext::CBaseFunction* recordId = nullptr;
     RED4ext::CBaseFunction* door = nullptr;
     RED4ext::CBaseFunction* window = nullptr;
+    RED4ext::CBaseFunction* isPlayer = nullptr;
 };
 
 bool ResolveCarRtti(CarRtti& aOut)
@@ -69,7 +71,8 @@ bool ResolveCarRtti(CarRtti& aOut)
     aOut.recordId = aOut.vehicle->GetFunction("GetRecordID");
     aOut.door = ps->GetFunction("GetDoorState");
     aOut.window = ps->GetFunction("GetWindowState");
-    return aOut.find && aOut.ps && aOut.recordId && aOut.door && aOut.window;
+    aOut.isPlayer = aOut.vehicle->GetFunction("IsPlayerVehicle");
+    return aOut.find && aOut.ps && aOut.recordId && aOut.door && aOut.window && aOut.isPlayer;
 }
 
 // A door or window state (both enums: 0 closed, 1 open, 2 detached for doors).
@@ -168,6 +171,12 @@ float CarOpenness(const CarRtti& aRtti, RED4ext::ScriptGameInstance& aGame, uint
 #ifdef ATR_TUNE
     ++g_carsFound;
 #endif
+    if (aCar.player < 0)
+    {
+        bool player = false;
+        RED4ext::ExecuteFunction(entity.instance, aRtti.isPlayer, &player);
+        aCar.player = player ? 1 : 0;
+    }
     if (aCar.convertible < 0)
     {
         RED4ext::TweakDBID record;
@@ -281,6 +290,12 @@ void ReadCars()
         g_carsOpen += car.openness > 0.0f ? 1 : 0;
 #endif
     }
+}
+
+bool IsPlayerCar(uint64_t aKey)
+{
+    const auto car = g_cars.find(aKey);
+    return car != g_cars.end() && car->second.player == 1;
 }
 
 float OpennessOf(const LiveVoice& aVoice)
