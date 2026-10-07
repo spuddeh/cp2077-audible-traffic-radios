@@ -116,6 +116,7 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle aHandle,
         PatchCarRadioRule();
 #ifdef ATR_TUNE
         HookEqView(aHandle, aSdk);
+        HookSendView(aHandle, aSdk);
 #endif
         static RED4ext::v1::GameState state{
             .OnEnter = nullptr,

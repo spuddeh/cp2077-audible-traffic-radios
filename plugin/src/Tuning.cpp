@@ -275,11 +275,44 @@ int SafeGetAuxSends(AkGetAuxSendsFn aGet, uint64_t aObject, uint8_t* aValues, ui
     }
 }
 
+// The send level a voice actually uses: CAkBehavioralCtx::GetAuxSendsValues (0x1ad66a0) reads the context's
+// game-defined aux send volume (dB) at +0xb0, used only when +0x12a bit 0 is set, and gains every game-defined send
+// with it. The context's registered game object is at +0x08. The detour records the last value per game object.
+using GetAuxSendsFn = void (*)(void* aCtx, void* aArray);
+GetAuxSendsFn g_getAuxSends = nullptr;
+std::mutex g_sendMutex;
+std::unordered_map<uintptr_t, float> g_sendDb;
+
+void GetAuxSendsDetour(void* aCtx, void* aArray)
+{
+    const auto ctx = reinterpret_cast<uintptr_t>(aCtx);
+    if (Read<uint8_t>(ctx + 0x12a) & 1)
+    {
+        std::lock_guard lock(g_sendMutex);
+        if (g_sendDb.size() < 4096)
+        {
+            g_sendDb[Read<uintptr_t>(ctx + 0x08)] = Read<float>(ctx + 0xb0);
+        }
+    }
+    g_getAuxSends(aCtx, aArray);
+}
+
+void HookSendView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk)
+{
+    const auto target = AtRva<void*>(0x1ad66a0, {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x55});
+    const bool hooked = target && aSdk->hooking->Attach(aHandle, target, reinterpret_cast<void*>(&GetAuxSendsDetour),
+                                                        reinterpret_cast<void**>(&g_getAuxSends));
+    Log(hooked ? "send view: hooked" : "send view: GetAuxSendsValues not this game build's - no send view");
+}
+
 void ReverbView()
 {
     static const auto get = AtRva<AkGetAuxSendsFn>(0x1ad2470, {0x40, 0x53, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x40});
     static const auto reg = AtRva<AkRegisterMeterFn>(0x1acb900, {0x48, 0x83, 0xEC, 0x38, 0x80, 0x3D});
     static const auto lock = WwiseLock();
+    using GetObjFn = uintptr_t (*)(uintptr_t aRegistry, uint64_t aGameObject);
+    static const auto getObj =
+        AtRva<GetObjFn>(0x1b3b230, {0x44, 0x8B, 0x41, 0x30, 0x4C, 0x8B, 0xCA, 0x45, 0x85, 0xC0});
     static uint64_t next = 0;
     const uint64_t now = GetTickCount64();
     if (!get || !reg || !lock || now < next || !TryEnterCriticalSection(lock))
@@ -305,8 +338,20 @@ void ReverbView()
         uint32_t count = 8;
         SafeGetAuxSends(get, best->gameObject, values, &count);
         char part[96];
-        std::snprintf(part, sizeof(part), " car %llx %s open %.2f sends", static_cast<unsigned long long>(best->key),
-                      kReceiverNames[best->receiver], bestOpen);
+        const uintptr_t registry = Read<uintptr_t>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + 0x339f7b0);
+        const uintptr_t object = getObj && registry ? getObj(registry, best->gameObject) : 0;
+        float sendDb = std::numeric_limits<float>::quiet_NaN();
+        {
+            std::lock_guard sendLock(g_sendMutex);
+            const auto found = g_sendDb.find(object);
+            if (object && found != g_sendDb.end())
+            {
+                sendDb = found->second;
+            }
+            g_sendDb.clear();
+        }
+        std::snprintf(part, sizeof(part), " car %llx %s open %.2f send %.1f dB, sends", static_cast<unsigned long long>(best->key),
+                      kReceiverNames[best->receiver], bestOpen, sendDb);
         line += part;
         for (uint32_t i = 0; i < count && i < 8; ++i)
         {

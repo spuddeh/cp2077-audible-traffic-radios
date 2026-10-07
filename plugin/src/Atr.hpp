@@ -155,7 +155,8 @@ void WriteOverlay();                                                            
 void ReadTuning();                                                               // Tuning.cpp
 void TimedLevelVoices();                                                         // Tuning.cpp
 void DrainEqView();
-void ReverbView();                                                                // Tuning.cpp                                                              // Tuning.cpp
+void ReverbView();
+void HookSendView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk);  // Tuning.cpp                                                                // Tuning.cpp                                                              // Tuning.cpp
 void HookEqView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk);  // Tuning.cpp
 #endif
 } // namespace atr
