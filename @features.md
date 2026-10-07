@@ -45,7 +45,7 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 - [x] Muffled by walls: the world radio's two `game_occlusion` curves (volume 0 to -12 dB, low-pass 0 to 57)
   attached to the NPC mixer once at load (`SetRTPC` virtual, `0x1adda50`).
 - [x] Through fights and a wanted level: the -96 dB duck that combat and police music put on the NPC radio bus is
-  set to 0 on both ducking buses (`+0x110` list, entry target `+0x08`, volume `+0x0c`). Not yet verified in game.
+  set to 0 on both ducking buses (`+0x110` list, entry target `+0x08`, volume `+0x0c`).
 - [x] Every address and byte is verified before use; on any other game build the plugin logs and does nothing.
 - [x] Tuning build (`ATR_TUNE`): `atr_tune.txt` (`levels`, `muffle`, `open 1` for every car fully open,
   `weights <window> <door> <torn-off> <pane>`) applied live; every 10 s a `perf:`, `cars:` and `playing:` line
@@ -55,6 +55,7 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 - [x] `docs/HOW-IT-WORKS.md`: the technical write-up for modders.
 
 ## Verified in game (Testing)
+- 2026-10-07: both duck lines logged at load; traffic radios heard through a wanted level and a fight by ear.
 - 2026-10-05: traffic car radios heard at the game's own car radio voicing, on vanilla and RadioXL stations; the
   mixer object keeps one address through save loads and the main menu.
 - 2026-10-06: per-car levels land (`/t3`, per playing id); 14 of 14 restarted cars came back at the same level;
