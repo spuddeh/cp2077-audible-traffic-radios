@@ -50,6 +50,9 @@ and the Wwise techniques (editing loaded objects in memory, per-voice parameters
 Copy `red4ext\plugins\AudibleTrafficRadios\` into the game folder, or install the archive with a mod manager.
 Requires [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380).
 
+Use it or Immersive NPC Car Stereos, not both: both make traffic cars play music, so with both a car can play
+two at once.
+
 ## Build
 
 ```powershell
