@@ -64,8 +64,10 @@ it (0 to 9 dB):
   bypass flag a value glides in over about 3 s and every restarted voice swells up from 12 dB under.
 - **Keyed on the car.** A car's radio voice restarts often while in earshot (station slot changes, the 35 m edge):
   65 of 132 cars in one session, 38 of those within 25 m. A `TrafficVehicleEmitter` (vtable `0x2b458a0`) keeps
-  its car's entity id at `+0x138`; the level is a hash of that, so a car comes back at the same level. Kind 3
-  emitters have no such field and fall back to the voice's playing id.
+  its car's entity id at `+0x138`; the level is a hash of that, so a car comes back at the same level. A kind 3
+  emitter (a plain `RadioEmitter`) keeps the same id at `+0x108`, the field `RadioEmitter::GetEntityId`
+  (`0x9dac30`) returns, so a car keeps its level and is read for openness after it leaves traffic. A traffic
+  emitter's `+0x108` is a different id.
 - **Weighted to the middle.** The share is the mean of three independent hashes, so most cars sit near +6 dB and
   few at either end.
 - **Finding the voices.** Every frame, every listener of every station (engine root, hash `2549221846`, `+0xa8`
@@ -185,7 +187,5 @@ produced one wrong conclusion during development.
 
 - The quest-driven ducks on the NPC radio bus (`Music_Quest_Muting_Radios_Guns_DVR`) stay the game's.
 - Important and gameplay dialogue are set to lower the radio buses through RTPC sidechains (read from `init.bnk`).
-- A car that has left traffic (kind 3: one the player gets out of, or one hit, fleeing or abandoned) has no entity
-  id on its emitter, so it stays closed for the open-air fade and its level is keyed on the voice.
 - Police traffic cars never start a radio; the police scanner station is not heard from traffic.
 - A hijacked car hands over to the player's receiver within 0.3 s, on the same station for vanilla stations.

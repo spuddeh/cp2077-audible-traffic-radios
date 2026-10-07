@@ -1,6 +1,11 @@
 # Changelog - Audible Traffic Radios
 
 ### [2026-10-07] Session
+- **[AudibleTrafficRadios] [Levels.cpp, OpenAir.cpp] v0.1.0**:
+    - [Fix] A car that left traffic (kind 3) is keyed on its emitter's `+0x108`, the id `RadioEmitter::GetEntityId`
+      returns, which holds the traffic car's `+0x138` entity id (four cars matched in the tuning log). It keeps its
+      level and is read for openness. Verified in game: levels unchanged across the switch, openness 0.25 and 0.50.
+    - [New] Tuning build: the `level:` line names the listener kind and the emitter's `+0x108`.
 - **[AudibleTrafficRadios] [Ducks.cpp] v0.1.0**:
     - [New] Combat and police music no longer duck traffic radios: the duck entries on `Music_Systemic_Combat`
       (2791646749) and `Music_Systemic_Police` (318512183) aimed at `Music_Diagetic_Radios_Vehicle_NPC`

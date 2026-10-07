@@ -27,15 +27,15 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
   by its own share (0 to 9 dB) through `veh_engage_moving_faster` set per playing id
   (`SetRTPCValueByPlayingID`, `0x1acf6a0`), the parameter's smoothing bypassed.
   - [x] Weighted to the middle (mean of three hashes).
-  - [x] Keyed on the car (`TrafficVehicleEmitter +0x138` entity id), so a restarted radio keeps its level; kind 3
-    emitters fall back to the playing id.
+  - [x] Keyed on the car (`TrafficVehicleEmitter +0x138` entity id), so a restarted radio keeps its level; a kind 3
+    emitter keeps the same id at `+0x108`, so a car keeps its level as it leaves traffic.
   - [x] Every new voice levelled on the next frame; about 1 µs per frame measured.
 - [x] Muffled from inside a car: the mixer follows the game's `veh_interior` at vanilla's traffic-noise values
   (-4 dB, low-pass 25). Wwise's lock is tried, never waited on.
 - [x] Open-air traffic cars, graded: each car's openness (0 to 1) adds a weight per window down (0.25), door open
   (0.5), door torn off (0.75) and shattered pane (0.25, `Glass::IsShattered`, `0x273094`); 1 for no side windows
   (`hasSideWindows` false, or a `targa`/`cabrio` `player_audio_resource`). Doors and windows read through RTTI every
-  250 ms; kind 3 cars stay closed.
+  250 ms; kind 3 cars are read by their `+0x108` id.
   - [x] Openness is `atr_open_air` (this plugin's own game parameter) on the car's Wwise game object, 250 ms glide.
   - [x] Only each receiver EQ's treble shelf fades, to 0 dB at 1 (the closed body); bass, mid and reverb bands keep
     CDPR's sound per car class. Curves attached to the effects at load (`CAkFxBase` `SetRTPC`, `0x1b50b20`):
@@ -55,6 +55,8 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 - [x] `docs/HOW-IT-WORKS.md`: the technical write-up for modders.
 
 ## Verified in game (Testing)
+- 2026-10-07: a car leaving traffic keeps its level (two cars, +3.3 dB before and after) and its emitter's
+  `+0x108` matched its traffic `+0x138` (four cars); kind 3 cars read as vehicles and opened (0.25, 0.50).
 - 2026-10-07: both duck lines logged at load; traffic radios heard through a wanted level and a fight by ear.
 - 2026-10-05: traffic car radios heard at the game's own car radio voicing, on vanilla and RadioXL stations; the
   mixer object keeps one address through save loads and the main menu.
