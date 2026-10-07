@@ -106,6 +106,14 @@ class's character. The EQ's output takes off the loudness the lift adds (pink no
 5.9 muscle, 2.4 sports/SUV/truck/hyper, 1.0 police) and adds 3 dB, so every open car type is 3 dB louder than
 closed and the balance between types holds.
 
+**The street's echo opens with the car.** Each NPC receiver sound already uses the game-defined aux sends (the
+game's own area reverb, the same one world radios use) at its own `GameAuxSendVolume` (property `0x0C`): -16 dB for
+most classes, -12 hyper, -6 police, against the world radio's -5. A curve on `atr_open_air` raises it to -5 at full
+openness. It is added through the node's `SetRTPC` with **no scaling and its points in plain dB**: with dB scaling
+the reading differs by property (a volume curve read -0.7488 as -12 dB, a send curve read +2.5 as +765 dB, which
+silences the send). The value a voice really uses is the context's: `CAkBehavioralCtx::GetAuxSendsValues`
+(`0x1ad66a0`) reads the send in dB at context `+0xb0` and the volume at `+0x88`; the tuning build hooks it.
+
 ### Stations on traffic cars
 
 A traffic car picks from its sound set's `matchingStartupRadioStations` (`audioVehicleMetadata` in

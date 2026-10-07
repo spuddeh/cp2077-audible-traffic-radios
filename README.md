@@ -26,7 +26,8 @@ Some of this is the game's own and only held back; some is new.
 - **Traffic radios keep playing through fights and a wanted level.** The game silences them while combat or
   police music plays; your own radio still follows the game's rules (or RadioXL's switches).
 - **Open cars sound open.** A car with a door open or torn off, a window down or broken, or no roof, sounds less
-  muffled and a little louder the more of it is open. Each car class keeps its own sound.
+  muffled, a little louder and fills more of the street's echo the more of it is open. Each car class keeps its
+  own sound.
 - **More stations on traffic.** Growl FM, Impulse, Dark Star and Royal Blue Radio, which no traffic car plays in
   the base game, are on themed cars: Growl FM on most cars, Impulse on sports cars, Dark Star on gang and nomad
   cars, Royal Blue Radio on executive cars and limousines.

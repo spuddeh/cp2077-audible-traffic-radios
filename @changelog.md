@@ -1,6 +1,16 @@
 # Changelog - Audible Traffic Radios
 
 ### [2026-10-07] Session
+- **[AudibleTrafficRadios] [OpenAir.cpp, Muffling.cpp, Tuning.cpp] v0.1.0**:
+    - [New] Open cars fill more of the street's echo: a curve on `atr_open_air` raises each NPC receiver sound's
+      `GameAuxSendVolume` (0x0C) from its own value (-16 most, -12 hyper, -6 police) to -5 dB, the world radio's.
+      Added through the node's `SetRTPC`, additive, no scaling, plain dB points.
+    - [Fix] The same curve with dB scaling read +2.5 as +765 dB on the voice and silenced the send (reverb bus
+      meters fell 5 to 7 dB when open, against 3 dB with no curve).
+    - [New] Tuning build: reverb view (`Query::GetGameObjectAuxSendValues` 0x1ad2470 plus bus meters on each
+      reverb bus seen) and send view (a hook on `CAkBehavioralCtx::GetAuxSendsValues` 0x1ad66a0 logging the voice
+      context's send at +0xb0 and its value block at +0x88).
+    - [Verified] Wall occlusion is right as shipped: -12.0 dB and low-pass 57 on the voice indoors.
 - **[AudibleTrafficRadios] [Levels.cpp, OpenAir.cpp] v0.1.0**:
     - [Fix] A car that left traffic (kind 3) is keyed on its emitter's `+0x108`, the id `RadioEmitter::GetEntityId`
       returns, which holds the traffic car's `+0x138` entity id (four cars matched in the tuning log). It keeps its
