@@ -281,7 +281,12 @@ int SafeGetAuxSends(AkGetAuxSendsFn aGet, uint64_t aObject, uint8_t* aValues, ui
 using GetAuxSendsFn = void (*)(void* aCtx, void* aArray);
 GetAuxSendsFn g_getAuxSends = nullptr;
 std::mutex g_sendMutex;
-std::unordered_map<uintptr_t, float> g_sendDb;
+struct SendParams
+{
+    float send;
+    float block[16];  // ctx +0x88 onwards, the context's final values
+};
+std::unordered_map<uintptr_t, SendParams> g_sendDb;
 
 void GetAuxSendsDetour(void* aCtx, void* aArray)
 {
@@ -291,7 +296,9 @@ void GetAuxSendsDetour(void* aCtx, void* aArray)
         std::lock_guard lock(g_sendMutex);
         if (g_sendDb.size() < 4096)
         {
-            g_sendDb[Read<uintptr_t>(ctx + 0x08)] = Read<float>(ctx + 0xb0);
+            SendParams& p = g_sendDb[Read<uintptr_t>(ctx + 0x08)];
+            p.send = Read<float>(ctx + 0xb0);
+            std::memcpy(p.block, reinterpret_cast<const void*>(ctx + 0x88), sizeof(p.block));
         }
     }
     g_getAuxSends(aCtx, aArray);
@@ -341,18 +348,26 @@ void ReverbView()
         const uintptr_t registry = Read<uintptr_t>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + 0x339f7b0);
         const uintptr_t object = getObj && registry ? getObj(registry, best->gameObject) : 0;
         float sendDb = std::numeric_limits<float>::quiet_NaN();
+        float block[16] = {};
         {
             std::lock_guard sendLock(g_sendMutex);
             const auto found = g_sendDb.find(object);
             if (object && found != g_sendDb.end())
             {
-                sendDb = found->second;
+                sendDb = found->second.send;
+                std::memcpy(block, found->second.block, sizeof(block));
             }
             g_sendDb.clear();
         }
-        std::snprintf(part, sizeof(part), " car %llx %s open %.2f send %.1f dB, sends", static_cast<unsigned long long>(best->key),
+        std::snprintf(part, sizeof(part), " car %llx %s open %.2f send %.1f dB,", static_cast<unsigned long long>(best->key),
                       kReceiverNames[best->receiver], bestOpen, sendDb);
         line += part;
+        for (int i = 0; i < 16; ++i)
+        {
+            std::snprintf(part, sizeof(part), "%s%.2f", i ? " " : " ctx[", block[i]);
+            line += part;
+        }
+        line += "] sends";
         for (uint32_t i = 0; i < count && i < 8; ++i)
         {
             uint32_t bus = 0;
