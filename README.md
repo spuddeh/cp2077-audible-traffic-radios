@@ -28,6 +28,8 @@ Some of this is the game's own and only held back; some is new.
 - **Open cars sound open.** A car with a door open or torn off, a window down or broken, or no roof, sounds less
   muffled, a little louder and fills more of the street's echo the more of it is open. Each car class keeps its
   own sound.
+- **Your own car follows your radio volume.** Your car heard from outside (summoned, or parked with its radio on)
+  plays at a fixed level and follows the Car Radio volume slider, so at 0 it is silent outside too.
 - **More stations on traffic.** Growl FM, Impulse, Dark Star and Royal Blue Radio, which no traffic car plays in
   the base game, are on themed cars: Growl FM on most cars, Impulse on sports cars, Dark Star on gang and nomad
   cars, Royal Blue Radio on executive cars and limousines.

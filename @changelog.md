@@ -1,6 +1,12 @@
 # Changelog - Audible Traffic Radios
 
 ### [2026-10-07] Session
+- **[AudibleTrafficRadios] [Levels.cpp, OpenAir.cpp, Muffling.cpp] v0.1.0** (#1):
+    - [New] The player's own car heard from outside: `IsPlayerVehicle` read once per car through RTTI; its voice
+      goes to the top of the range and `atr_own_car` (3888816778, per playing id) carries the Car Radio slider's level
+      (`volume_music_car_radio`, global, through the interior bus's slider curve: silent / -16 / -9 / -5 / 0 dB at
+      0 / 25 / 50 / 75 / 100). A Volume curve on the NPC mixer adds it (dB-scaled amplitude-1 points, curve id
+      0xA7730001). Verified on the voice: -9.0, -16.0 and -96 dB at 50, 25 and 0.
 - **[AudibleTrafficRadios] [OpenAir.cpp, Muffling.cpp, Tuning.cpp] v0.1.0**:
     - [New] Open cars fill more of the street's echo: a curve on `atr_open_air` raises each NPC receiver sound's
       `GameAuxSendVolume` (0x0C) from its own value (-16 most, -12 hyper, -6 police) to -5 dB, the world radio's.

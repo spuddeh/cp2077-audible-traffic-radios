@@ -11,5 +11,7 @@
   muffled sound when it closes up.
 - Walls muffle traffic radios the way they muffle the game's other radios.
 - Traffic radios keep playing through fights and a wanted level.
+- Your own car heard from outside (summoned, or parked with its radio on) plays at a fixed level and follows the
+  Car Radio volume slider.
 - A car that leaves traffic (one you get out of, or one hit, fleeing or abandoned) keeps its level and sounds
   open with its doors and windows open.

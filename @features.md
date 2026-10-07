@@ -15,6 +15,7 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 | Muffled from inside a car | Expanded | `veh_interior` and vanilla's traffic-noise values (-4 dB, low-pass 25) |
 | Muffled by walls | Expanded | the world radio's own `game_occlusion` curves |
 | Open-air cars, graded | Expanded | each car class's EQ (only its treble shelf moves) and the doors, windows and glass the game tracks |
+| Your own car heard from outside follows the Car Radio slider | Expanded | the game's own slider curve for the car radio, applied to the car's outside voice |
 | Open cars fill the street's echo | Expanded | the game's own area reverb, which each traffic radio already sends to; only the amount moves |
 | Through fights and a wanted level | Expanded | combat and police music's own duck on the traffic radio bus, set to 0 |
 | Growl FM, Impulse, Dark Star, Royal Blue on themed traffic lists | Expanded | the stations and the list mechanism; the theming follows vanilla's (Delamain, Villefort) |
@@ -56,6 +57,9 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 - [x] `docs/HOW-IT-WORKS.md`: the technical write-up for modders.
 
 ## Verified in game (Testing)
+- 2026-10-07: the player's own car (summoned, radio on, player outside) is recognised by `IsPlayerVehicle`, set to
+  the top of the range, and follows the Car Radio slider on the voice: -9.0 dB at 50, -16.0 at 25, -96 at 0, back
+  at 100 (ctx `+0x88`).
 - 2026-10-07: an open car's area reverb send reads -16.0 dB closed and -5.0 dB open on the voice (send view,
   `CAkBehavioralCtx::GetAuxSendsValues` ctx `+0xb0`); wall occlusion reads exactly -12.0 dB and low-pass 57 on the
   voice (ctx `+0x88`, `+0x90`) inside an apartment.

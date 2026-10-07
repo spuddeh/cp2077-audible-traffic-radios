@@ -125,6 +125,15 @@ and nomad variants, Royal Blue on the executive cars and limousines. Samizdat st
 Six lists spell Morro Rock `radio_station 01_att_rock`, which names no station; they are corrected. A list edited
 after load is the one traffic picks from.
 
+### The player's own car
+
+The player's own vehicle, while the player is not in it (summoned, or parked with its radio on), plays through the
+NPC receivers like traffic. `vehicleBaseObject.IsPlayerVehicle`, called through RTTI once per car, names it. Its
+voice leaves the level spread for the top of the range, and a per-voice parameter of this plugin's, `atr_own_car`,
+carries the Car Radio slider's level: `volume_music_car_radio` (0 to 100, read global) through the curve the game
+puts on the player car's interior bus for that slider (silent, -16, -9, -5 and 0 dB at 0, 25, 50, 75 and 100). A
+Volume curve attached to the NPC mixer adds it. Measured on the voice: -9.0 dB at 50, -16.0 at 25, -96 at 0.
+
 ### Through fights and a wanted level
 
 `init.bnk` ducks `Music_Diagetic_Radios_Vehicle_NPC` (194813043) by -96 dB while `Music_Systemic_Combat` or
