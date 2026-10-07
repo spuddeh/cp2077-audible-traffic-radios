@@ -519,8 +519,9 @@ std::pair<int, int> AttachEqFades()
 // Each NPC receiver sound uses the game-defined aux sends (the game's area reverb) at its own GameAuxSendVolume
 // (property 0x0C): -16 dB for most classes, -12 hyper, -6 police, against the world radio's -5. Openness raises the
 // send to the world radio's level at 1, so an open car fills the street the way a world radio does. The curve is
-// added to the sound's own value (additive, dB-scaled, points as amplitude - 1), through the node's SetRTPC
-// virtual, as for the occlusion curves.
+// added to the sound's own value through the node's SetRTPC virtual, additive with no scaling and its points in dB:
+// a dB-scaled curve is converted again when read (+2.5 arrived as +765 dB on the voice's send, measured through
+// CAkBehavioralCtx::GetAuxSendsValues), and a send that far out of range is silenced.
 constexpr uint8_t kPropGameAuxSend = 0x0C;
 constexpr float kOpenAuxSendDb = -5.0f;  // radio_default_int's GameAuxSendVolume
 
@@ -558,9 +559,9 @@ std::pair<int, int> AttachReverbSends()
         for (uint32_t i = 0; i < kFadePoints; ++i)
         {
             const float t = static_cast<float>(i) / (kFadePoints - 1);
-            points[i] = {t, std::pow(10.0f, (kOpenAuxSendDb - own) * t / 20.0f) - 1.0f, kCurveLinear};
+            points[i] = {t, (kOpenAuxSendDb - own) * t, kCurveLinear};
         }
-        const AkCurveDesc desc{0, 2, 2, 0, kRtpcOpenAir, kPropGameAuxSend, curveId++, kFadePoints};
+        const AkCurveDesc desc{0, 2, 0, 0, kRtpcOpenAir, kPropGameAuxSend, curveId++, kFadePoints};
         done += SafeNodeAttach(attach, sound, desc, points) == 1 ? 1 : 0;
     }
     return {done, tried};
