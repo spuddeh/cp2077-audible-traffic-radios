@@ -10,13 +10,15 @@ namespace atr
 // AK::SoundEngine::SetRTPCValueByPlayingID (0x1acf6a0), so the car's engine sounds on the same game object keep
 // theirs. A voice is found the way the station update finds it: every listener of every station (engine root
 // -> audio system +0xa8 -> radio manager +0xe0 -> stations), its broadcast event (+0x120) matched by name in its
-// sounds (+0x58, count +0x64; name +0x8, playing id +0x44, state +0x59). Traffic (kind 2) and cars that left
-// traffic (kind 3) both play through the NPC receivers.
+// sounds (+0x58, count +0x64; name +0x8, playing id +0x44, state +0x59). Traffic (kind 2), cars that left traffic
+// (kind 3) and a parked car switched on outside traffic (kind 4, the vehicle_radio_emitter kind the player's
+// receivers also use) all play through the NPC receivers; only a voice on one of those receivers is taken.
 //
 // A car's radio voice restarts often while it is in earshot (slot changes, the 35 m edge), so the level is keyed
 // on the car: a TrafficVehicleEmitter (vtable 0x2b458a0) keeps its car's entity id at +0x138; a kind 3 emitter keeps
-// the same id at +0x108 (RadioEmitter::GetEntityId), so a car that leaves traffic keeps its level. A traffic
-// emitter's +0x108 is another id.
+// the same id at +0x108 (RadioEmitter::GetEntityId, which GetRadioOwnerEntityId reads for every kind but 0 and 5),
+// so a car that leaves traffic keeps its level; a kind 4 emitter keeps its car's id there too. A traffic emitter's
+// +0x108 is another id.
 constexpr uint32_t kHashEngineRoot = 2549221846;
 constexpr uint32_t kRtpcEngageMovingFaster = 139023859;
 constexpr uintptr_t kRvaTrafficEmitterVtbl = 0x2b458a0;
@@ -73,7 +75,7 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut,
             {
                 const auto emitter = Read<uintptr_t>(listeners + l * 8);
                 const uint8_t kind = emitter ? Read<uint8_t>(emitter + 0x12c) : 0;
-                if (kind != 2 && kind != 3)
+                if (kind < 2 || kind > 4)
                 {
                     continue;
                 }
@@ -95,7 +97,7 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut,
                         if (id && Read<uint8_t>(sound + 0x59) == 3 && *aCount < aMax)
                         {
                             const uint64_t car = Read<uintptr_t>(emitter) == aTrafficVtbl ? Read<uint64_t>(emitter + 0x138)
-                                                 : kind == 3                                 ? Read<uint64_t>(emitter + 0x108)
+                                                 : kind == 3 || kind == 4                    ? Read<uint64_t>(emitter + 0x108)
                                                                                              : 0;
                             aOut[(*aCount)++] = Voice{id, car ? car : id, static_cast<uint8_t>(receiver), car != 0,
                                                       kind, Read<uint64_t>(emitter + 0x108)};
