@@ -71,6 +71,7 @@ bool OnUpdate(RED4ext::CGameApplication*)
     ThemeStations();
     TimedLevelVoices();
     DrainEqView();
+    ReverbView();
     static uint64_t nextOverlay = 0;
     if (GetTickCount64() >= nextOverlay)
     {

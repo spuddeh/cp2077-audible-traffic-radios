@@ -13,6 +13,7 @@
 #include <RED4ext/Scripting/Natives/entEntityID.hpp>
 #include <RED4ext/Scripting/Utils.hpp>
 #include <RED4ext/TweakDB.hpp>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -134,6 +135,7 @@ extern uint32_t g_carsRead, g_carsFound, g_carsOpen;
 
 // --- what each file offers the others ---
 uintptr_t SafeFindObject(uint32_t aId);                                         // Wwise.cpp
+float SafeProp(uintptr_t aObject, uint8_t aProp);                                // Wwise.cpp
 Mixer SetMixerVolume(float aTarget, float aPrevious, float aLpf, float* aFound);  // Wwise.cpp
 LPCRITICAL_SECTION WwiseLock();                                                  // Muffling.cpp
 void PatchPredicate();                                                           // Patches.cpp
@@ -145,13 +147,15 @@ void ReadCars();                                                                
 void OpenAir();                                                                  // OpenAir.cpp
 float OpennessOf(const LiveVoice& aVoice);                                       // OpenAir.cpp
 std::pair<int, int> AttachEqFades();                                             // OpenAir.cpp
+std::pair<int, int> AttachReverbSends();                                         // OpenAir.cpp
 void ThemeStations();                                                            // Stations.cpp
 bool LiftDucks();                                                                // Ducks.cpp
 #ifdef ATR_TUNE
 void WriteOverlay();                                                             // OpenAir.cpp
 void ReadTuning();                                                               // Tuning.cpp
 void TimedLevelVoices();                                                         // Tuning.cpp
-void DrainEqView();                                                              // Tuning.cpp
+void DrainEqView();
+void ReverbView();                                                                // Tuning.cpp                                                              // Tuning.cpp
 void HookEqView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk);  // Tuning.cpp
 #endif
 } // namespace atr

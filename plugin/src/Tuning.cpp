@@ -216,4 +216,139 @@ void TimedLevelVoices()
     g_cost.next = now + 10000;
 }
 #endif
+
+#ifdef ATR_TUNE
+// --- the area reverb view ---
+// Once a second: the game-defined aux sends of the playing traffic car with the most openness
+// (AK::SoundEngine::Query::GetGameObjectAuxSendValues, 0x1ad2470: game object, AkAuxSendValue[] of 16 bytes -
+// listener u64, aux bus u32, control value f32 - and an in/out count), and the level of every reverb bus seen so
+// far, metered through AK::SoundEngine::RegisterBusMeteringCallback (0x1acb900; info +0x00 the cookie, +0x10 the
+// metering with RMS at +0x10, the channel count in the low byte of +0x18). A reverb bus carries its reverb effect,
+// so it calls back. One `reverb:` line a second.
+using AkGetAuxSendsFn = int (*)(uint64_t aGameObject, void* aValues, uint32_t* aCount);
+using AkRegisterMeterFn = int (*)(uint32_t aBus, void (*aCallback)(void*), uint32_t aFlags, void* aCookie);
+constexpr uint32_t kMeterRms = 4;
+constexpr size_t kReverbMeters = 16;
+
+struct ReverbMeter
+{
+    uint32_t bus = 0;
+    std::atomic<double> energy{0.0};
+    std::atomic<uint32_t> calls{0};
+};
+ReverbMeter g_reverb[kReverbMeters];
+
+void ReverbMeterCallback(void* aInfo)
+{
+    const auto info = reinterpret_cast<uintptr_t>(aInfo);
+    const auto slot = reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(info));
+    const auto metering = *reinterpret_cast<uintptr_t*>(info + 0x10);
+    const auto channels = *reinterpret_cast<uint8_t*>(info + 0x18);
+    if (slot >= kReverbMeters || !metering || !channels)
+    {
+        return;
+    }
+    const auto* rms = *reinterpret_cast<float**>(metering + 0x10);
+    if (!rms)
+    {
+        return;
+    }
+    double power = 0.0;
+    for (uint8_t i = 0; i < channels; ++i)
+    {
+        power += static_cast<double>(rms[i]) * rms[i];
+    }
+    g_reverb[slot].energy.fetch_add(power / channels);
+    g_reverb[slot].calls.fetch_add(1);
+}
+
+int SafeGetAuxSends(AkGetAuxSendsFn aGet, uint64_t aObject, uint8_t* aValues, uint32_t* aCount)
+{
+    __try
+    {
+        return aGet(aObject, aValues, aCount);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        *aCount = 0;
+        return -1;
+    }
+}
+
+void ReverbView()
+{
+    static const auto get = AtRva<AkGetAuxSendsFn>(0x1ad2470, {0x40, 0x53, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x40});
+    static const auto reg = AtRva<AkRegisterMeterFn>(0x1acb900, {0x48, 0x83, 0xEC, 0x38, 0x80, 0x3D});
+    static const auto lock = WwiseLock();
+    static uint64_t next = 0;
+    const uint64_t now = GetTickCount64();
+    if (!get || !reg || !lock || now < next || !TryEnterCriticalSection(lock))
+    {
+        return;
+    }
+    next = now + 1000;
+    const LiveVoice* best = nullptr;
+    float bestOpen = -1.0f;
+    for (const auto& [id, voice] : g_voices)
+    {
+        const float open = OpennessOf(voice);
+        if (voice.gameObject != ~0ull && open > bestOpen)
+        {
+            best = &voice;
+            bestOpen = open;
+        }
+    }
+    std::string line = "reverb:";
+    if (best)
+    {
+        alignas(8) uint8_t values[16 * 8] = {};
+        uint32_t count = 8;
+        SafeGetAuxSends(get, best->gameObject, values, &count);
+        char part[96];
+        std::snprintf(part, sizeof(part), " car %llx %s open %.2f sends", static_cast<unsigned long long>(best->key),
+                      kReceiverNames[best->receiver], bestOpen);
+        line += part;
+        for (uint32_t i = 0; i < count && i < 8; ++i)
+        {
+            uint32_t bus = 0;
+            float control = 0.0f;
+            std::memcpy(&bus, values + i * 16 + 8, 4);
+            std::memcpy(&control, values + i * 16 + 12, 4);
+            std::snprintf(part, sizeof(part), " %u=%.2f", bus, control);
+            line += part;
+            bool known = false;
+            for (auto& m : g_reverb)
+            {
+                known = known || m.bus == bus;
+            }
+            for (size_t s = 0; !known && bus && s < kReverbMeters; ++s)
+            {
+                if (!g_reverb[s].bus)
+                {
+                    g_reverb[s].bus = bus;
+                    reg(bus, ReverbMeterCallback, kMeterRms, reinterpret_cast<void*>(s));
+                    known = true;
+                }
+            }
+        }
+    }
+    LeaveCriticalSection(lock);
+    line += " | levels";
+    for (auto& m : g_reverb)
+    {
+        if (!m.bus)
+        {
+            continue;
+        }
+        const double energy = m.energy.exchange(0.0);
+        const uint32_t calls = m.calls.exchange(0);
+        char part[48];
+        std::snprintf(part, sizeof(part), " %u=%.1f", m.bus,
+                      calls && energy > 0.0 ? 10.0 * std::log10(energy / calls) : -120.0);
+        line += part;
+    }
+    Log(line);
+}
+#endif
+
 } // namespace atr

@@ -136,8 +136,10 @@ void AttachOcclusion()
     const int a = mixer ? SafeAttach(attach, mixer, volumeDesc, volume) : 0;
     const int b = mixer ? SafeAttach(attach, mixer, lowPassDesc, lowPass) : 0;
     const auto [faded, fades] = AttachEqFades();
+    const auto [sent, sends] = AttachReverbSends();
     lockOff(critical);
     Log("open-air cars: " + std::to_string(faded) + " of " + std::to_string(fades) + " EQ fade curves attached");
+    Log("open-air cars: " + std::to_string(sent) + " of " + std::to_string(sends) + " area reverb curves attached");
     Log(a == 1 && b == 1 ? "walls muffle traffic radios: occlusion attached to the NPC car radio mixer"
                          : "the occlusion curves did not attach - walls do not muffle traffic radios");
 }

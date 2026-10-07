@@ -515,4 +515,55 @@ std::pair<int, int> AttachEqFades()
     return {done, tried};
 }
 
+// --- 9. the area reverb opens with the car ---
+// Each NPC receiver sound uses the game-defined aux sends (the game's area reverb) at its own GameAuxSendVolume
+// (property 0x0C): -16 dB for most classes, -12 hyper, -6 police, against the world radio's -5. Openness raises the
+// send to the world radio's level at 1, so an open car fills the street the way a world radio does. The curve is
+// added to the sound's own value (additive, dB-scaled, points as amplitude - 1), through the node's SetRTPC
+// virtual, as for the occlusion curves.
+constexpr uint8_t kPropGameAuxSend = 0x0C;
+constexpr float kOpenAuxSendDb = -5.0f;  // radio_default_int's GameAuxSendVolume
+
+using AkNodeAttachFn = int (*)(uintptr_t aObject, const AkCurveDesc* aDesc, const AkCurvePoint* aPoints);
+
+int SafeNodeAttach(AkNodeAttachFn aAttach, uintptr_t aObject, const AkCurveDesc& aDesc, const AkCurvePoint* aPoints)
+{
+    __try
+    {
+        return aAttach(aObject, &aDesc, aPoints);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
+
+// Called under Wwise's lock. Returns the curves attached and the curves tried.
+std::pair<int, int> AttachReverbSends()
+{
+    static const auto attach =
+        AtRva<AkNodeAttachFn>(0x1adda50, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10});
+    int done = 0, tried = 0;
+    uint32_t curveId = 0xA7720000;
+    for (const uint32_t id : kNpcReceiverSounds)
+    {
+        ++tried;
+        const uintptr_t sound = attach ? SafeFindObject(id) : 0;
+        const float own = sound ? SafeProp(sound, kPropGameAuxSend) : std::numeric_limits<float>::quiet_NaN();
+        if (!(own < kOpenAuxSendDb))
+        {
+            continue;  // missing, or not below the open level: nothing to raise
+        }
+        AkCurvePoint points[kFadePoints];
+        for (uint32_t i = 0; i < kFadePoints; ++i)
+        {
+            const float t = static_cast<float>(i) / (kFadePoints - 1);
+            points[i] = {t, std::pow(10.0f, (kOpenAuxSendDb - own) * t / 20.0f) - 1.0f, kCurveLinear};
+        }
+        const AkCurveDesc desc{0, 2, 2, 0, kRtpcOpenAir, kPropGameAuxSend, curveId++, kFadePoints};
+        done += SafeNodeAttach(attach, sound, desc, points) == 1 ? 1 : 0;
+    }
+    return {done, tried};
+}
+
 } // namespace atr
