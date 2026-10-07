@@ -186,6 +186,7 @@ produced one wrong conclusion during development.
 ## 5. What the game does that this plugin leaves alone
 
 - The quest-driven ducks on the NPC radio bus (`Music_Quest_Muting_Radios_Guns_DVR`) stay the game's.
-- Important and gameplay dialogue are set to lower the radio buses through RTPC sidechains (read from `init.bnk`).
+- Important and gameplay dialogue are set to lower the radio buses through RTPC sidechains (read from `init.bnk`,
+  not measured). A phone call does not lower traffic radios (heard).
 - Police traffic cars never start a radio; the police scanner station is not heard from traffic.
 - A hijacked car hands over to the player's receiver within 0.3 s, on the same station for vanilla stations.

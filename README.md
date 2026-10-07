@@ -32,8 +32,8 @@ Some of this is the game's own and only held back; some is new.
   cars, Royal Blue Radio on executive cars and limousines.
 
 What you hear is the game's own car radio sound: each car class's own filtering, so it sounds like music from
-inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m. Dialogue is
-set to lower them, as in the base game. A car that leaves traffic (one you get out of, or one hit, fleeing or
+inside a car with the windows up, and the game's own distance falloff, fading out by about 35 m. A phone call
+does not lower them; the game's own dialogue rules may lower them briefly while someone nearby speaks. A car that leaves traffic (one you get out of, or one hit, fleeing or
 abandoned) keeps its level and opens up with its doors and windows like any other.
 
 No sound bank is shipped or replaced: the changes are made to the sound data the game has loaded. Every address is
