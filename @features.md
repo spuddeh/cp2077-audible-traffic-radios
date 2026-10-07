@@ -93,7 +93,9 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 ## Planned
 - [x] A preview build for the author of Immersive NPC Car Stereos: GitHub pre-release `v0.1.0-preview`
   (2026-10-06), the release DLL verified in game first.
-- [ ] Open-air cars by ear in normal play: the weights, the +3 dB rise, muscle and police receivers.
+- [x] Second preview: GitHub pre-release `v0.1.0-preview.2` (2026-10-07), the release DLL verified in game (all ten
+  load lines) and the uploaded zip's DLL hash-matched to it.
+- [x] Open-air cars by ear in normal play: a long quest chain and a lot of driving, nothing off (user, 2026-10-07).
 - [-] A versioned API for Immersive NPC Car Stereos: not needed (2026-10-07). The two mods play different audio
   and call nothing of each other's; revisit only if that author wants their mod to drive this one.
 - [ ] More station variety on traffic cars.
