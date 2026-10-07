@@ -14,8 +14,9 @@ namespace atr
 // traffic (kind 3) both play through the NPC receivers.
 //
 // A car's radio voice restarts often while it is in earshot (slot changes, the 35 m edge), so the level is keyed
-// on the car: a TrafficVehicleEmitter (vtable 0x2b458a0) keeps its car's entity id at +0x138. A kind 3 emitter has
-// no such field and falls back to its playing id.
+// on the car: a TrafficVehicleEmitter (vtable 0x2b458a0) keeps its car's entity id at +0x138; a kind 3 emitter keeps
+// the same id at +0x108 (RadioEmitter::GetEntityId), so a car that leaves traffic keeps its level. A traffic
+// emitter's +0x108 is another id.
 constexpr uint32_t kHashEngineRoot = 2549221846;
 constexpr uint32_t kRtpcEngageMovingFaster = 139023859;
 constexpr uintptr_t kRvaTrafficEmitterVtbl = 0x2b458a0;
@@ -93,8 +94,9 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut,
                         const auto id = Read<uint32_t>(sound + 0x44);
                         if (id && Read<uint8_t>(sound + 0x59) == 3 && *aCount < aMax)
                         {
-                            const uint64_t car =
-                                Read<uintptr_t>(emitter) == aTrafficVtbl ? Read<uint64_t>(emitter + 0x138) : 0;
+                            const uint64_t car = Read<uintptr_t>(emitter) == aTrafficVtbl ? Read<uint64_t>(emitter + 0x138)
+                                                 : kind == 3                                 ? Read<uint64_t>(emitter + 0x108)
+                                                                                             : 0;
                             aOut[(*aCount)++] = Voice{id, car ? car : id, static_cast<uint8_t>(receiver), car != 0,
                                                       kind, Read<uint64_t>(emitter + 0x108)};
                         }

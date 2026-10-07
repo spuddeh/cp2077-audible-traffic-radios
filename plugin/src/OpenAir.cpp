@@ -9,7 +9,7 @@ namespace atr
 // off and shattered pane, added up, or 1 for a car with no side windows. Every 250 ms the car is read through RTTI
 // (ScriptGameInstance.FindEntityByID on the emitter's entity id, then GetVehiclePS and GetDoorState /
 // GetWindowState for seats 0 to 3); its record's hasSideWindows and player_audio_resource are read once. A car
-// that left traffic (kind 3) has no entity id and stays closed.
+// that left traffic (kind 3) is read the same way, by the id its emitter keeps at +0x108.
 //
 // Openness is atr_open_air, a game parameter of this plugin's set on the car's Wwise game object, and the receiver
 // EQs' treble shelves fade with it (section 8): the closed body's muffling lifts, the car's own sound stays.
