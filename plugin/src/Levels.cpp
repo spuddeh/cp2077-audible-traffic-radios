@@ -49,6 +49,8 @@ struct Voice
     uint64_t key;      // the car's entity id, or the playing id
     uint8_t receiver;  // index in kNpcReceivers
     bool car;          // the key is the car's entity id
+    uint8_t kind;      // the listener kind: 2 traffic, 3 a car that left traffic
+    uint64_t param;    // the emitter's +0x108, RadioEmitter::GetEntityId
 };
 
 bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut, uint32_t aMax, uint32_t* aCount)
@@ -93,7 +95,8 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut,
                         {
                             const uint64_t car =
                                 Read<uintptr_t>(emitter) == aTrafficVtbl ? Read<uint64_t>(emitter + 0x138) : 0;
-                            aOut[(*aCount)++] = Voice{id, car ? car : id, static_cast<uint8_t>(receiver), car != 0};
+                            aOut[(*aCount)++] = Voice{id, car ? car : id, static_cast<uint8_t>(receiver), car != 0,
+                                                      kind, Read<uint64_t>(emitter + 0x108)};
                         }
                         break;
                     }
@@ -174,9 +177,10 @@ void LevelVoices()
             // Bypass the parameter's own smoothing, which is built for a car's speed: the level applies at once.
             setRtpc(kRtpcEngageMovingFaster, CurveValueFor(lower), voices[i].playingId, 0, kCurveLinear, true);
 #ifdef ATR_TUNE
-            char line[128];
-            std::snprintf(line, sizeof(line), "level: car %llx %s %+.1f dB", static_cast<unsigned long long>(voices[i].key),
-                          kReceiverNames[voices[i].receiver], g_levelTop + lower);
+            char line[192];
+            std::snprintf(line, sizeof(line), "level: car %llx %s %+.1f dB kind %u param %llx",
+                          static_cast<unsigned long long>(voices[i].key), kReceiverNames[voices[i].receiver],
+                          g_levelTop + lower, voices[i].kind, static_cast<unsigned long long>(voices[i].param));
             Log(line);
 #endif
         }
