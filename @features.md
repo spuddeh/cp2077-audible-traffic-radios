@@ -98,4 +98,6 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 - [x] Open-air cars by ear in normal play: a long quest chain and a lot of driving, nothing off (user, 2026-10-07).
 - [-] A versioned API for Immersive NPC Car Stereos: not needed (2026-10-07). The two mods play different audio
   and call nothing of each other's; revisit only if that author wants their mod to drive this one.
-- [ ] More station variety on traffic cars.
+- [x] More station variety on traffic cars: the stations no shipped list carries go onto themed lists, and the
+  six misspelt Morro Rock entries are corrected.
+- [ ] Investigate why only three or four stations are heard on traffic at once. Not a release blocker.

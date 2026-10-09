@@ -1,0 +1,24 @@
+{
+  "$schema_note": "Maps release artifacts to their Nexus Mods targets. To publish, create a GitHub Release in the PUBLIC repo tagged '<artifact>-v<version>' (e.g. audible-traffic-radios-v1.0.0). The release.yml workflow parses the tag, stages each contentDir into its installDir, zips the stage as '<fileBaseName>_v<version>.zip' so the game trees sit at the zip root, attaches the zip to the release, and uploads to Nexus. See RELEASING.md.",
+  "$paths_note": "contentDir = repo folder whose CONTENTS ship. installDir = path inside the zip those contents are placed at. This mod ships one game tree, red4ext: the plugin DLL. Nothing is built in CI; the committed release DLL is what ships.",
+  "$file_id_note": "The Nexus file id is NOT stored here. It lives in a REPOSITORY VARIABLE named NEXUS_FILE_ID_AUDIBLE_TRAFFIC_RADIOS in the public repo, set under Settings > Secrets and variables > Actions > Variables. It does not exist until the mod's first file has been uploaded to Nexus by hand. Get it from the mod page's Files tab > 'API Info' (Nexus labels it 'Group ID'). Do NOT use the file_id from the public v1 API - that is a different id space.",
+  "$mod_page_note": "nexus_mod_id is the number in the mod page URL.",
+  "artifacts": {
+    "audible-traffic-radios": {
+      "displayName": "Audible Traffic Radios",
+      "fileBaseName": "AudibleTrafficRadios",
+      "contentDir": [
+        "red4ext"
+      ],
+      "installDir": [
+        "red4ext"
+      ],
+      "nexus_mod_id": "34896",
+      "category": "main",
+      "primary_mod_manager_download": true,
+      "show_requirements_pop_up": true,
+      "update_mod_version": true,
+      "currentVersion": "1.0.0"
+    }
+  }
+}

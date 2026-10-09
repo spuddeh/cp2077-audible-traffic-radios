@@ -1,5 +1,11 @@
 # Changelog - Audible Traffic Radios
 
+### [2026-10-09] Session
+- **[AudibleTrafficRadios] [Main.cpp] v1.0.0**:
+    - [Change] Version 1.0.0 for the first release (plugin info and source header).
+    - [New] Release pipeline: `release.yml` (shared copy), `release-manifest.json`, and `publish.json` for the
+      private dev repo / public release repo split.
+
 ### [2026-10-07] Session
 - **[AudibleTrafficRadios] [Levels.cpp, OpenAir.cpp, Muffling.cpp] v0.1.0** (#1):
     - [New] The player's own car heard from outside: `IsPlayerVehicle` read once per car through RTTI; its voice
