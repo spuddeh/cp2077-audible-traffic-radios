@@ -1,6 +1,6 @@
 # Audible Traffic Radios
 
-A RED4ext plugin for Cyberpunk 2077 2.31 that lets you hear the radios playing in traffic cars, through the
+A RED4ext plugin for Cyberpunk 2077 2.5 and 2.31 that lets you hear the radios playing in traffic cars, through the
 game's own car radio sound.
 
 ## What it changes
@@ -48,7 +48,8 @@ and the Wwise techniques (editing loaded objects in memory, per-voice parameters
 ## Install
 
 Copy `red4ext\plugins\AudibleTrafficRadios\` into the game folder, or install the archive with a mod manager.
-Requires [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380).
+Requires [RED4ext](https://www.nexusmods.com/cyberpunk2077/mods/2380). There is one download per game version: the
+main one for 2.5 and `AudibleTrafficRadios_Game_2.31` for 2.31. Install the one for your game, not both.
 
 Use it or Immersive NPC Car Stereos, not both: both make traffic cars play music, so with both a car can play
 two at once.
@@ -56,13 +57,15 @@ two at once.
 ## Build
 
 ```powershell
-cmake -S plugin -B plugin\build -G "Visual Studio 17 2022" -A x64
-cmake --build plugin\build --config Release
+pwsh -File plugin\build.ps1                # one DLL per game build
+pwsh -File plugin\build.ps1 -Variant tune  # the tuning build
 ```
 
-RED4ext.SDK is header-only; `plugin/CMakeLists.txt` points the include path at a checkout. Configure with
-`-DATR_TUNE=ON` for the tuning build, which reads `atr_tune.txt` beside the DLL and logs its own per-frame cost.
-It is for development only.
+RED4ext.SDK fixes its type layouts and the runtime a plugin declares when the plugin is compiled, so each game
+build gets its own DLL, compiled against the SDK commit pinned for it in `plugin/builds.json` (2.5 to
+`red4ext/`, 2.31 to `compat/2.31/`). `build.ps1` exports each commit from a RED4ext.SDK clone (`-SdkRepo`).
+The addresses the plugin uses for each game build are in `plugin/src/Build.hpp`. The tuning build reads
+`atr_tune.txt` beside the DLL and logs its own per-frame cost. It is for development only.
 
 ## License
 

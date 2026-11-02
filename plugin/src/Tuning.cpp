@@ -6,7 +6,7 @@ namespace atr
 {
 #ifdef ATR_TUNE
 // --- tuning build: EQ view ---
-// Every gain, Q and output value a Parametric EQ receives: CAkParameterEQFXParams::SetParam (0x1ab4640: this, short
+// Every gain, Q and output value a Parametric EQ receives: CAkParameterEQFXParams::SetParam (this, short
 // id, const float*, size) is hooked. Ids: band * 5 + 1 gain (dB, clamped to +-24), + 3 Q, 15 output gain (dB). The
 // audio thread only records; the game thread logs, with each block's band 1 and band 3 frequency to tell the
 // receivers apart (fields at +0x10 + band * 20).
@@ -36,7 +36,7 @@ int EqSetParamDetour(void* aThis, int16_t aId, const void* aValue, uint32_t aSiz
 
 void HookEqView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk)
 {
-    const auto target = AtRva<void*>(0x1ab4640, {0x4C, 0x8B, 0xC9, 0x4D, 0x85, 0xC0, 0x75, 0x05});
+    const auto target = g_build ? AtRva<void*>(g_build->eqSetParam, kEqSetParamPrologue) : nullptr;
     const bool hooked = target && aSdk->hooking->Attach(aHandle, target, reinterpret_cast<void*>(&EqSetParamDetour),
                                                         reinterpret_cast<void**>(&g_eqSetParam));
     Log(hooked ? "eq view: hooked" : "eq view: SetParam not this game build's - no EQ view");
@@ -220,9 +220,9 @@ void TimedLevelVoices()
 #ifdef ATR_TUNE
 // --- the area reverb view ---
 // Once a second: the game-defined aux sends of the playing traffic car with the most openness
-// (AK::SoundEngine::Query::GetGameObjectAuxSendValues, 0x1ad2470: game object, AkAuxSendValue[] of 16 bytes -
+// (AK::SoundEngine::Query::GetGameObjectAuxSendValues: game object, AkAuxSendValue[] of 16 bytes -
 // listener u64, aux bus u32, control value f32 - and an in/out count), and the level of every reverb bus seen so
-// far, metered through AK::SoundEngine::RegisterBusMeteringCallback (0x1acb900; info +0x00 the cookie, +0x10 the
+// far, metered through AK::SoundEngine::RegisterBusMeteringCallback (info +0x00 the cookie, +0x10 the
 // metering with RMS at +0x10, the channel count in the low byte of +0x18). A reverb bus carries its reverb effect,
 // so it calls back. One `reverb:` line a second.
 using AkGetAuxSendsFn = int (*)(uint64_t aGameObject, void* aValues, uint32_t* aCount);
@@ -275,7 +275,7 @@ int SafeGetAuxSends(AkGetAuxSendsFn aGet, uint64_t aObject, uint8_t* aValues, ui
     }
 }
 
-// The send level a voice actually uses: CAkBehavioralCtx::GetAuxSendsValues (0x1ad66a0) reads the context's
+// The send level a voice actually uses: CAkBehavioralCtx::GetAuxSendsValues reads the context's
 // game-defined aux send volume (dB) at +0xb0, used only when +0x12a bit 0 is set, and gains every game-defined send
 // with it. The context's registered game object is at +0x08. The detour records the last value per game object.
 using GetAuxSendsFn = void (*)(void* aCtx, void* aArray);
@@ -306,7 +306,7 @@ void GetAuxSendsDetour(void* aCtx, void* aArray)
 
 void HookSendView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk)
 {
-    const auto target = AtRva<void*>(0x1ad66a0, {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x55});
+    const auto target = g_build ? AtRva<void*>(g_build->ctxGetAuxSends, kCtxGetAuxSendsPrologue) : nullptr;
     const bool hooked = target && aSdk->hooking->Attach(aHandle, target, reinterpret_cast<void*>(&GetAuxSendsDetour),
                                                         reinterpret_cast<void**>(&g_getAuxSends));
     Log(hooked ? "send view: hooked" : "send view: GetAuxSendsValues not this game build's - no send view");
@@ -314,12 +314,12 @@ void HookSendView(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSd
 
 void ReverbView()
 {
-    static const auto get = AtRva<AkGetAuxSendsFn>(0x1ad2470, {0x40, 0x53, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x40});
-    static const auto reg = AtRva<AkRegisterMeterFn>(0x1acb900, {0x48, 0x83, 0xEC, 0x38, 0x80, 0x3D});
+    static const auto get = g_build ? AtRva<AkGetAuxSendsFn>(g_build->getAuxSends, kGetAuxSendsPrologue) : nullptr;
+    static const auto reg = g_build ? AtRva<AkRegisterMeterFn>(g_build->registerBusMeter, kRegisterBusMeterPrologue) : nullptr;
     static const auto lock = WwiseLock();
     using GetObjFn = uintptr_t (*)(uintptr_t aRegistry, uint64_t aGameObject);
     static const auto getObj =
-        AtRva<GetObjFn>(0x1b3b230, {0x44, 0x8B, 0x41, 0x30, 0x4C, 0x8B, 0xCA, 0x45, 0x85, 0xC0});
+        g_build ? AtRva<GetObjFn>(g_build->registryGetObj, kGetObjPrologue) : nullptr;
     static uint64_t next = 0;
     const uint64_t now = GetTickCount64();
     if (!get || !reg || !lock || now < next || !TryEnterCriticalSection(lock))
@@ -345,7 +345,7 @@ void ReverbView()
         uint32_t count = 8;
         SafeGetAuxSends(get, best->gameObject, values, &count);
         char part[96];
-        const uintptr_t registry = Read<uintptr_t>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + 0x339f7b0);
+        const uintptr_t registry = Read<uintptr_t>(Image(g_build->registry));
         const uintptr_t object = getObj && registry ? getObj(registry, best->gameObject) : 0;
         float sendDb = std::numeric_limits<float>::quiet_NaN();
         float block[16] = {};

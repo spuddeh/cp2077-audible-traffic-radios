@@ -19,6 +19,10 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
 | Open cars fill the street's echo | Expanded | the game's own area reverb, which each traffic radio already sends to; only the amount moves |
 | Through fights and a wanted level | Expanded | combat and police music's own duck on the traffic radio bus, set to 0 |
 | Growl FM, Impulse, Dark Star, Royal Blue on themed traffic lists | Expanded | the stations and the list mechanism; the theming follows vanilla's (Delamain, Villefort) |
+| HKGN on ordinary traffic cars (game 2.5) | Expanded | the station, which the game puts on no traffic list, and the list mechanism |
+
+## Game builds
+- [x] Game 2.5 and 2.31, each with its own DLL (2.31 as a second main file) and its own address table in `plugin/src/Build.hpp`, picked by its byte checks. The addresses below are 2.31's; 2.5's are in the table.
 
 ## Implemented
 - [x] A station that only traffic cars are tuned to plays (radio mode 1: one byte in the station's silent

@@ -5,14 +5,14 @@
 namespace atr
 {
 // --- 5. muffled from inside a car ---
-// veh_interior (290459857), read global through AK::SoundEngine::Query::GetRTPCValue (0x1ad2c60), is the game's
+// veh_interior (290459857), read global through AK::SoundEngine::Query::GetRTPCValue, is the game's
 // own "inside a car" value: 1 in first person in a car, 0 in third person or on foot, lowered by broken glass. The
 // mixer follows it: volume g_levelTop + g_muffleDb * value, low-pass g_muffleLpf * value.
 //
 // Both the query and the mixer write enter Wwise's global lock, a CRITICAL_SECTION the audio thread holds for its
 // whole render pass, so waiting on it stalls the game thread for milliseconds. The lock is tried instead: when the
 // audio thread has it, this frame is skipped. The section is re-entrant, so the calls inside take it again freely.
-// Its address is the lea at +0x17 in CAkFunctionCritical's enter (0x1af6d90): 48 8D 0D rel32.
+// Its address is the lea at +0x17 in CAkFunctionCritical's enter: 48 8D 0D rel32.
 constexpr uint32_t kRtpcVehInterior = 290459857;
 float g_interior = -1.0f;  // the value the mixer was last written for
 
@@ -32,7 +32,7 @@ float SafeInterior(AkGetRtpcValueFn aGet)
 
 LPCRITICAL_SECTION WwiseLock()
 {
-    const auto enter = AtRva<const uint8_t*>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
+    const auto enter = g_build ? AtRva<const uint8_t*>(g_build->criticalEnter, kCriticalEnterPrologue) : nullptr;
     if (!enter || enter[0x17] != 0x48 || enter[0x18] != 0x8D || enter[0x19] != 0x0D)
     {
         return nullptr;
@@ -46,7 +46,7 @@ void MuffleLocked(AkGetRtpcValueFn aGet, bool* aStopped);
 
 void Muffle()
 {
-    static const auto get = AtRva<AkGetRtpcValueFn>(0x1ad2c60, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C});
+    static const auto get = g_build ? AtRva<AkGetRtpcValueFn>(g_build->getRtpcValue, kGetRtpcValuePrologue) : nullptr;
     static const auto lock = WwiseLock();
     static bool stopped = false;
     if (stopped)
@@ -98,7 +98,7 @@ void MuffleLocked(AkGetRtpcValueFn get, bool* aStopped)
 // The NPC receivers and their mixer read no occlusion parameter, so walls did not stop them; the world radio
 // (radio_default_int) reads game_occlusion. Its two curves go onto the NPC mixer once, beside the volume write:
 // volume 0 to -12 dB and low-pass 0 to 57. The attach is the parameter node's own SetRTPC virtual at slot 0x1c0
-// (0x1adda50), the one a bank load calls: (object start, curve description, points), 1 on success.
+// (CAkParameterNodeBase::AddRtpcCurve), the one a bank load calls: (object start, curve description, points), 1 on success.
 constexpr uint32_t kRtpcGameOcclusion = 154512849;
 using AkAttachRtpcFn = int (*)(uintptr_t aObject, const AkCurveDesc* aDesc, const AkCurvePoint* aPoints);
 
@@ -117,9 +117,9 @@ int SafeAttach(AkAttachRtpcFn aAttach, uintptr_t aObject, const AkCurveDesc& aDe
 void AttachOcclusion()
 {
     static const auto attach =
-        AtRva<AkAttachRtpcFn>(0x1adda50, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10});
-    static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
-    static const auto lockOff = AtRva<AkCriticalFn>(0x1af7100, {0x48, 0x83, 0xEC, 0x28, 0xFF, 0x15});
+        g_build ? AtRva<AkAttachRtpcFn>(g_build->nodeAddRtpcCurve, kNodeAddRtpcCurvePrologue) : nullptr;
+    static const auto lockOn = g_build ? AtRva<AkCriticalFn>(g_build->criticalEnter, kCriticalEnterPrologue) : nullptr;
+    static const auto lockOff = g_build ? AtRva<AkCriticalFn>(g_build->criticalLeave, kCriticalLeavePrologue) : nullptr;
     if (!attach || !lockOn || !lockOff)
     {
         Log("the occlusion curves are not this game build's - walls do not muffle traffic radios");

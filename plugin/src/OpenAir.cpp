@@ -110,23 +110,19 @@ bool IsConvertible(const RED4ext::TweakDBID& aRecord)
     return false;
 }
 
-// Broken glass: vehicle::BaseObject keeps its game::VehicleDestruction at +0x600, whose data (its first field)
-// lists the panes at +0x298 (count +0x2a4, 0x30 bytes each) and the windshield at +0x2a8. Each pane answers
-// game::VehicleDestruction::Glass::IsShattered (0x273094), the call the save code uses for brokenGlass. The saved
+// Broken glass: vehicle::BaseObject keeps its game::VehicleDestruction at the table's vehicleDestruction, whose
+// data (its first field) lists the panes at +0x298 (count +0x2a4, 0x30 bytes each) and the windshield at +0x2a8.
+// Each pane answers game::VehicleDestruction::Glass::IsShattered, the call the save code uses for brokenGlass. The saved
 // brokenGlass itself is only written when the car is saved, so it is not read here.
 using GlassShatteredFn = bool (*)(uintptr_t aGlass);
 
 GlassShatteredFn GlassCheck()
 {
     static const auto shattered =
-        AtRva<GlassShatteredFn>(0x273094, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x55, 0x48, 0x8B, 0xEC, 0x48, 0x83, 0xEC});
-    // The offsets as the game's own code uses them: OnGlassDestruction reads +0x600, the save code +0x2a4,
-    // +0x298 and +0x2a8.
-    static const bool offsets = AtRva<const uint8_t*>(0x25f84f6, {0x4C, 0x8B, 0x89, 0x00, 0x06, 0x00, 0x00}) &&
-                                AtRva<const uint8_t*>(0x2743cd, {0x39, 0x9A, 0xA4, 0x02, 0x00, 0x00}) &&
-                                AtRva<const uint8_t*>(0x2743df, {0x48, 0x03, 0x8A, 0x98, 0x02, 0x00, 0x00}) &&
-                                AtRva<const uint8_t*>(0x274437, {0x48, 0x8B, 0x88, 0xA8, 0x02, 0x00, 0x00});
-    return offsets ? shattered : nullptr;
+        g_build ? AtRva<GlassShatteredFn>(g_build->glassShattered, kGlassShatteredPrologue) : nullptr;
+    // The offsets as the game's own code uses them: OnGlassDestruction reads the vehicle's destruction, the save
+    // code +0x2a4, +0x298 and +0x2a8. SelectBuild checked the same bytes.
+    return g_build ? shattered : nullptr;
 }
 
 // Shattered panes, windshield included.
@@ -134,7 +130,7 @@ uint32_t SafeGlassBroken(GlassShatteredFn aShattered, uintptr_t aVehicle)
 {
     __try
     {
-        const auto destruction = Read<uintptr_t>(aVehicle + 0x600);
+        const auto destruction = Read<uintptr_t>(aVehicle + g_build->vehicleDestruction);
         const auto data = destruction ? Read<uintptr_t>(destruction) : 0;
         if (!data)
         {
@@ -354,9 +350,9 @@ bool SafeObjectGone(AkGetObjFn aGetObj, uintptr_t aRegistry, uint64_t aGameObjec
 void OpenAir()
 {
     static const auto getObj =
-        AtRva<AkGetObjFn>(0x1b3b230, {0x44, 0x8B, 0x41, 0x30, 0x4C, 0x8B, 0xCA, 0x45, 0x85, 0xC0});
-    static const auto gameObject = AtRva<AkGameObjectFn>(0x1ad2680, {0x8B, 0xD1, 0x48, 0x8B, 0x0D});
-    static const auto setRtpc = AtRva<AkSetRtpcFn>(0x1acf570, {0x48, 0x83, 0xEC, 0x48, 0x0F, 0xB6, 0x44, 0x24});
+        g_build ? AtRva<AkGetObjFn>(g_build->registryGetObj, kGetObjPrologue) : nullptr;
+    static const auto gameObject = g_build ? AtRva<AkGameObjectFn>(g_build->gameObjectFromPlayingId, kGameObjectPrologue) : nullptr;
+    static const auto setRtpc = g_build ? AtRva<AkSetRtpcFn>(g_build->setRtpc, kSetRtpcPrologue) : nullptr;
     static const auto lock = WwiseLock();
     static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     static bool stopped = false;
@@ -386,7 +382,7 @@ void OpenAir()
     {
         return;
     }
-    const uintptr_t registry = Read<uintptr_t>(base + 0x339f7b0);
+    const uintptr_t registry = Read<uintptr_t>(base + g_build->registry);
     std::set<uint64_t> live;
     for (auto& [playingId, voice] : g_voices)
     {
@@ -426,10 +422,10 @@ void OpenAir()
 // An effect parameter takes the curve's value in place of its own setting (measured through SetParam: a closed
 // car's band 3 gain arrived as 0, not -20), and a curve marked dB is converted again on the way. So every curve is
 // exclusive with no scaling and carries the absolute value: the EQ's own setting at 0, the open value at 1, five
-// points (gains and output linear in dB, Q in ratio). The attach is CAkFxBase's own (0x1b50b20, the
+// points (gains and output linear in dB, Q in ratio). The attach is CAkFxBase::AddRtpcCurve (the
 // one a bank load calls for an effect's RTPC): (effect, curve description, points), 1 on success, and it reaches
 // effect instances already playing. Effects sit in g_pIndex's table 9, the indexed pointer being the object (vtable
-// CAkFxCustom 0x2f75ac0). A Parametric EQ parameter is band * 5 + (0 type, 1 gain, 2 frequency, 3 Q, 4 on), and 15
+// CAkFxCustom's). A Parametric EQ parameter is band * 5 + (0 type, 1 gain, 2 frequency, 3 Q, 4 on), and 15
 // the output level.
 struct EqFade
 {
@@ -458,9 +454,13 @@ using AkFxAttachRtpcFn = int (*)(uintptr_t aFx, const AkCurveDesc* aDesc, const 
 uintptr_t SafeFindFx(uint32_t aId)
 {
     static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!g_build)
+    {
+        return 0;
+    }
     __try
     {
-        const auto index = Read<uintptr_t>(base + 0x339f7b8);
+        const auto index = Read<uintptr_t>(base + g_build->index);
         const auto table = index ? index + 9 * 0x58 : 0;
         const auto buckets = table ? Read<uintptr_t>(table + 0x40) : 0;
         const auto count = table ? Read<uint32_t>(table + 0x48) : 0;
@@ -472,7 +472,7 @@ uintptr_t SafeFindFx(uint32_t aId)
         {
             if (Read<uint32_t>(fx + 0x10) == aId)
             {
-                return Read<uintptr_t>(fx) == base + 0x2f75ac0 ? fx : 0;
+                return Read<uintptr_t>(fx) == base + g_build->fxCustomVtbl ? fx : 0;
             }
         }
         return 0;
@@ -499,7 +499,7 @@ int SafeFxAttach(AkFxAttachRtpcFn aAttach, uintptr_t aFx, const AkCurveDesc& aDe
 std::pair<int, int> AttachEqFades()
 {
     static const auto attach =
-        AtRva<AkFxAttachRtpcFn>(0x1b50b20, {0x40, 0x55, 0x56, 0x48, 0x83, 0xEC, 0x38, 0x48, 0x8B, 0xF1, 0x48, 0xC7});
+        g_build ? AtRva<AkFxAttachRtpcFn>(g_build->fxAddRtpcCurve, g_build->fxAddRtpcCurvePrologue) : nullptr;
     int done = 0, tried = 0;
     uint32_t curveId = 0xA7710000;
     for (const auto& eq : kEqFades)
@@ -558,7 +558,7 @@ int SafeNodeAttach(AkNodeAttachFn aAttach, uintptr_t aObject, const AkCurveDesc&
 std::pair<int, int> AttachReverbSends()
 {
     static const auto attach =
-        AtRva<AkNodeAttachFn>(0x1adda50, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10});
+        g_build ? AtRva<AkNodeAttachFn>(g_build->nodeAddRtpcCurve, kNodeAddRtpcCurvePrologue) : nullptr;
     int done = 0, tried = 0;
     uint32_t curveId = 0xA7720000;
     for (const uint32_t id : kNpcReceiverSounds)

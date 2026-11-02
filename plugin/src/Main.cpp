@@ -2,7 +2,7 @@
 // Mod Name: Audible Traffic Radios
 // Author: Spuddeh
 // Description: Lets the radios in traffic cars be heard, through the game's own car radio sound.
-// Mod Version: 1.0.0
+// Mod Version: 1.1.0
 // Credits: RED4ext by WopsS.
 // ======================================================================================
 //
@@ -94,12 +94,29 @@ bool OnUpdate(RED4ext::CGameApplication*)
 
 using namespace atr;
 
+namespace
+{
+std::string GameVersion()
+{
+    if (!g_sdk || !g_sdk->runtime)
+    {
+        return "an unknown version";
+    }
+    // The game names its patches by minor and patch run together, with no trailing zero: RED4ext's 2.3.1 is
+    // 2.31 and its 2.5.0 is 2.5.
+    const auto* v = g_sdk->runtime;
+    return std::to_string(v->major) + "." + std::to_string(v->minor) + (v->patch ? std::to_string(v->patch) : "");
+}
+} // namespace
+
 RED4EXT_C_EXPORT void RED4EXT_CALL Query(RED4ext::v1::PluginInfo* aInfo)
 {
     aInfo->name = L"AudibleTrafficRadios";
     aInfo->author = L"Spuddeh";
-    aInfo->version = RED4EXT_V1_SEMVER(1, 0, 0);
-    aInfo->runtime = RED4EXT_V1_RUNTIME_VERSION_INDEPENDENT;
+    aInfo->version = RED4EXT_V1_SEMVER(1, 1, 0);
+    // The SDK's engine types (the script call frame, the engine) are laid out for one game build, so each build
+    // gets its own DLL, compiled against that build's SDK (plugin/build.ps1).
+    aInfo->runtime = RED4EXT_V1_RUNTIME_VERSION_LATEST;
     aInfo->sdk = RED4EXT_V1_SDK_VERSION_CURRENT;
 }
 
@@ -115,6 +132,11 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle aHandle,
     {
         g_sdk = aSdk;
         g_handle = aHandle;
+        g_build = SelectBuild();
+        Log(g_build ? "game build " + std::string(g_build->name) + " (RED4ext reports game " + GameVersion() +
+                          "): every byte check passed"
+                    : "no supported build matches this game (RED4ext reports game " + GameVersion() +
+                          ") - only the radio-gate patches and the station lists apply");
         PatchPredicate();
         PatchCarRadioRule();
 #ifdef ATR_TUNE

@@ -1,0 +1,8 @@
+{
+  "name": "AudibleTrafficRadios",
+  "builds": [
+    { "game": "2.5",  "sdk": "5246e659d783e5834cc08a90e56c8932c9ed3449", "ship": "red4ext/plugins/AudibleTrafficRadios" },
+    { "game": "2.31", "sdk": "f9ad5334362a8a0815baf58f47615697485feb52", "ship": "compat/2.31/red4ext/plugins/AudibleTrafficRadios" }
+  ],
+  "variants": { "tune": { "cmake": ["-DATR_TUNE=ON"] } }
+}

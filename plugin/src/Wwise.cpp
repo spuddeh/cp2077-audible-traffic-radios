@@ -24,12 +24,69 @@ uintptr_t ResolveByHash(uint32_t aHash)
     return resolve ? resolve(aHash) : 0;
 }
 
+namespace
+{
+bool Holds(uintptr_t aRva, const uint8_t* aBytes, size_t aLen)
+{
+    __try
+    {
+        return std::memcmp(reinterpret_cast<const void*>(Image(aRva)), aBytes, aLen) == 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+template <size_t N>
+bool Holds(uintptr_t aRva, const uint8_t (&aBytes)[N])
+{
+    return Holds(aRva, aBytes, N);
+}
+
+// Every code site of the table holds the bytes the plugin expects there. Globals and vtables have no bytes of
+// their own to check; the code that reads them is checked instead.
+bool Passes(const Build& aBuild)
+{
+    uint8_t destruction[7] = {0x4C, 0x8B, 0x89};
+    std::memcpy(destruction + 3, &aBuild.vehicleDestruction, sizeof(aBuild.vehicleDestruction));
+    return Holds(aBuild.setRtpc, kSetRtpcPrologue) && Holds(aBuild.setRtpcByPlayingId, kSetRtpcByPlayingIdPrologue) &&
+           Holds(aBuild.getRtpcValue, kGetRtpcValuePrologue) &&
+           Holds(aBuild.gameObjectFromPlayingId, kGameObjectPrologue) &&
+           Holds(aBuild.registryGetObj, kGetObjPrologue) && Holds(aBuild.criticalEnter, kCriticalEnterPrologue) &&
+           Holds(aBuild.criticalLeave, kCriticalLeavePrologue) && Holds(aBuild.setAkProp, kSetAkPropPrologue) &&
+           Holds(aBuild.nodeAddRtpcCurve, kNodeAddRtpcCurvePrologue) &&
+           Holds(aBuild.fxAddRtpcCurve, aBuild.fxAddRtpcCurvePrologue) &&
+           Holds(aBuild.glassShattered, kGlassShatteredPrologue) && Holds(aBuild.glassDestructionRead, destruction) &&
+           Holds(aBuild.glassCountRead, kGlassCountBytes) && Holds(aBuild.glassPanesRead, kGlassPanesBytes) &&
+           Holds(aBuild.glassWindshieldRead, kGlassWindshieldBytes);
+}
+} // namespace
+
+// The one table whose checks all pass, or null when none or several do.
+const Build* SelectBuild()
+{
+    const Build* found = nullptr;
+    for (const auto* build : kBuilds)
+    {
+        if (Passes(*build))
+        {
+            if (found)
+            {
+                return nullptr;
+            }
+            found = build;
+        }
+    }
+    return found;
+}
+
 // --- 3. the NPC car radio mixer's volume ---
-// g_pIndex (0x339f7b8): audio nodes are its first table, buckets at +0x40, count at +0x48; a node sits in bucket
+// g_pIndex: audio nodes are its first table, buckets at +0x40, count at +0x48; a node sits in bucket
 // id % count, chained through +0x8, id at +0x10. That pointer is 0x10 into the object, whose +0x08 holds the
-// vtable every parameter node shares (0x2ee0798) and whose property bundle is at +0x88 (a count byte, the prop
-// ids, the values from the next 4-byte boundary). CAkParameterNode::SetAkProp (0x1b07990) takes the object
-// start and runs under Wwise's global lock (CAkFunctionCritical, 0x1af6d90 / 0x1af7100).
+// vtable every parameter node shares and whose property bundle is at +0x88 (a count byte, the prop ids, the
+// values from the next 4-byte boundary). CAkParameterNode::SetAkProp takes the object start and runs under
+// Wwise's global lock (CAkFunctionCritical). Every address is the build table's (Build.hpp).
 constexpr float kVanillaVolume = -8.0f;
 
 // The range a car's radio plays in, in dB on the mixer. The mixer is set to the top; each voice is lowered from
@@ -48,9 +105,13 @@ float g_mixerNow = std::numeric_limits<float>::quiet_NaN();
 uintptr_t SafeFindObject(uint32_t aId)
 {
     static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!g_build)
+    {
+        return 0;
+    }
     __try
     {
-        const auto index = Read<uintptr_t>(base + 0x339f7b8);
+        const auto index = Read<uintptr_t>(base + g_build->index);
         const auto buckets = index ? Read<uintptr_t>(index + 0x40) : 0;
         const auto count = index ? Read<uint32_t>(index + 0x48) : 0;
         if (!buckets || !count)
@@ -62,7 +123,7 @@ uintptr_t SafeFindObject(uint32_t aId)
             if (Read<uint32_t>(node + 0x10) == aId)
             {
                 const uintptr_t object = node - 0x10;
-                return Read<uintptr_t>(object + 0x08) == base + 0x2ee0798 ? object : 0;
+                return Read<uintptr_t>(object + 0x08) == base + g_build->paramNodeVtbl ? object : 0;
             }
         }
         return 0;
@@ -99,9 +160,9 @@ float SafeProp(uintptr_t aObject, uint8_t aProp)
 // aPrevious; reports the volume it found.
 Mixer SetMixerVolume(float aTarget, float aPrevious, float aLpf, float* aFound)
 {
-    static const auto setProp = AtRva<AkSetPropFn>(0x1b07990, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83});
-    static const auto lockOn = AtRva<AkCriticalFn>(0x1af6d90, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B});
-    static const auto lockOff = AtRva<AkCriticalFn>(0x1af7100, {0x48, 0x83, 0xEC, 0x28, 0xFF, 0x15});
+    static const auto setProp = g_build ? AtRva<AkSetPropFn>(g_build->setAkProp, kSetAkPropPrologue) : nullptr;
+    static const auto lockOn = g_build ? AtRva<AkCriticalFn>(g_build->criticalEnter, kCriticalEnterPrologue) : nullptr;
+    static const auto lockOff = g_build ? AtRva<AkCriticalFn>(g_build->criticalLeave, kCriticalLeavePrologue) : nullptr;
     if (!setProp || !lockOn || !lockOff)
     {
         *aFound = std::numeric_limits<float>::quiet_NaN();

@@ -7,21 +7,20 @@ namespace atr
 // --- 4. a level per car ---
 // Each NPC car radio voice gets its own value of veh_engage_moving_faster (139023859), the mixer's vanilla level
 // control: -12 dB at 0 to 0 dB at 1, an S-curve, added to the mixer. It is set per playing id through
-// AK::SoundEngine::SetRTPCValueByPlayingID (0x1acf6a0), so the car's engine sounds on the same game object keep
+// AK::SoundEngine::SetRTPCValueByPlayingID, so the car's engine sounds on the same game object keep
 // theirs. A voice is found the way the station update finds it: every listener of every station (engine root
-// -> audio system +0xa8 -> radio manager +0xe0 -> stations), its broadcast event (+0x120) matched by name in its
+// -> audio system (the table's rootAudioSystem) -> radio manager +0xe0 -> stations), its broadcast event (+0x120) matched by name in its
 // sounds (+0x58, count +0x64; name +0x8, playing id +0x44, state +0x59). Traffic (kind 2), cars that left traffic
 // (kind 3) and a parked car switched on outside traffic (kind 4, the vehicle_radio_emitter kind the player's
 // receivers also use) all play through the NPC receivers; only a voice on one of those receivers is taken.
 //
 // A car's radio voice restarts often while it is in earshot (slot changes, the 35 m edge), so the level is keyed
-// on the car: a TrafficVehicleEmitter (vtable 0x2b458a0) keeps its car's entity id at +0x138; a kind 3 emitter keeps
+// on the car: a TrafficVehicleEmitter keeps its car's entity id at +0x138; a kind 3 emitter keeps
 // the same id at +0x108 (RadioEmitter::GetEntityId, which GetRadioOwnerEntityId reads for every kind but 0 and 5),
 // so a car that leaves traffic keeps its level; a kind 4 emitter keeps its car's id there too. A traffic emitter's
 // +0x108 is another id.
 constexpr uint32_t kHashEngineRoot = 2549221846;
 constexpr uint32_t kRtpcEngageMovingFaster = 139023859;
-constexpr uintptr_t kRvaTrafficEmitterVtbl = 0x2b458a0;
 constexpr float kCurveBottomDb = -12.0f;
 
 using AkSetRtpcByPlayingIdFn = int (*)(uint32_t aRtpc, float aValue, uint32_t aPlayingId, int32_t aMs, int aCurve,
@@ -62,7 +61,7 @@ bool SafeCollectVoices(uintptr_t aRootSlot, uintptr_t aTrafficVtbl, Voice* aOut,
     __try
     {
         const auto root = Read<uintptr_t>(aRootSlot);
-        const auto audio = root ? Read<uintptr_t>(root + 0xa8) : 0;
+        const auto audio = root ? Read<uintptr_t>(root + g_build->rootAudioSystem) : 0;
         const auto manager = audio ? Read<uintptr_t>(audio + 0xe0) : 0;
         const auto stations = manager ? Read<uintptr_t>(manager) : 0;
         const auto stationCount = manager ? Read<uint32_t>(manager + 0xc) : 0;
@@ -146,7 +145,7 @@ void LevelVoices()
 {
     static const uintptr_t rootSlot = ResolveByHash(kHashEngineRoot);
     static const auto setRtpc =
-        AtRva<AkSetRtpcByPlayingIdFn>(0x1acf6a0, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57});
+        g_build ? AtRva<AkSetRtpcByPlayingIdFn>(g_build->setRtpcByPlayingId, kSetRtpcByPlayingIdPrologue) : nullptr;
     static bool stopped = false;
     if (stopped)
     {
@@ -158,7 +157,7 @@ void LevelVoices()
         Log("the per-car level is not this game build's - every car plays at the top of the range");
         return;
     }
-    static const uintptr_t trafficVtbl = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + kRvaTrafficEmitterVtbl;
+    static const uintptr_t trafficVtbl = Image(g_build->trafficEmitterVtbl);
     Voice voices[256];
     uint32_t count = 0;
     if (!SafeCollectVoices(rootSlot, trafficVtbl, voices, 256, &count))
@@ -233,7 +232,7 @@ int AttachOwnCarCurve(uintptr_t aMixer)
 {
     using AttachFn = int (*)(uintptr_t, const AkCurveDesc*, const AkCurvePoint*);
     static const auto attach =
-        AtRva<AttachFn>(0x1adda50, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10});
+        g_build ? AtRva<AttachFn>(g_build->nodeAddRtpcCurve, kNodeAddRtpcCurvePrologue) : nullptr;
     static const float db[] = {kSilentDb, -60.0f, -40.0f, -24.0f, -16.0f, -9.0f, -5.0f, -2.0f, 0.0f};
     AkCurvePoint points[std::size(db)];
     for (size_t i = 0; i < std::size(db); ++i)
@@ -246,9 +245,9 @@ int AttachOwnCarCurve(uintptr_t aMixer)
 
 void OwnCar()
 {
-    static const auto get = AtRva<AkGetRtpcValueFn>(0x1ad2c60, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C});
+    static const auto get = g_build ? AtRva<AkGetRtpcValueFn>(g_build->getRtpcValue, kGetRtpcValuePrologue) : nullptr;
     static const auto setRtpc =
-        AtRva<AkSetRtpcByPlayingIdFn>(0x1acf6a0, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57});
+        g_build ? AtRva<AkSetRtpcByPlayingIdFn>(g_build->setRtpcByPlayingId, kSetRtpcByPlayingIdPrologue) : nullptr;
     static const auto lock = WwiseLock();
     if (!get || !setRtpc || !lock)
     {

@@ -1,5 +1,11 @@
 # Changelog
 
+### v1.1.0
+
+- Game 2.5 support.
+- HKGN (102.0 HKGN FM) plays on traffic cars on game 2.5.
+- Game 2.31 has its own main file, Audible Traffic Radios - Game 2.31.
+
 ### v1.0.0
 
 - Radios in traffic cars play, and you can hear them, through the game's own car radio sound.

@@ -1,5 +1,31 @@
 # Changelog - Audible Traffic Radios
 
+### [2026-11-02] Session
+- **[AudibleTrafficRadios] [Build.hpp, Wwise.cpp, Main.cpp, every feature file] v1.1.0**:
+    - [New] Game 2.5 support. Every address outside the two hash-resolved radio functions moves to `Build.hpp`,
+      one table per game build (2.5, 2.31), and `SelectBuild` uses the table whose every byte check passes; the
+      game version is only logged. The 2.5 table was matched from 2.31's in the Steam 2.5 exe (functions matched
+      with relocations masked, each entry confirmed by its 2.5 symbol name or by the code that references it).
+      Moved: every Wwise function and global (`g_pIndex` 0x39c5d00 and `g_pRegistryMgr` 0x39c5d08 swapped order),
+      the parameter-node, `CAkFxCustom` and `TrafficVehicleEmitter` vtables, engine root -> audio system
+      (+0xa8 -> +0xc8), vehicle -> destruction (+0x600 -> +0x620); `CAkFxBase::AddRtpcCurve` has a new prologue.
+      Unchanged: Wwise's index, bus duck lists and property bundles, and the radio emitter fields.
+    - [Fix] 1.0.0 declared `RUNTIME_VERSION_INDEPENDENT` and was built against the 2.31 SDK, so on 2.5 it ran
+      2.31's `CStackFrame` (0x68 bytes; 2.5's is 0xA8) in `ExecuteFunction` and read `CGameEngine::framework` at
+      +0x308 (2.5: +0x348), and six of nine features refused at their byte checks. It now declares the latest
+      runtime and builds once per game build.
+    - [New] A DLL per game build through the shared plugin build standard (`plugin/build.ps1`,
+      `red4ext-plugin.cmake`, `builds.json`: 2.5 on SDK 5246e659, 2.31 on f9ad5334). The 2.31 DLL ships as the
+      second main file "Audible Traffic Radios - Game 2.31" (artifact `game231`); a player installs one or the
+      other. Tuning build: `build.ps1 -Variant tune`.
+- **[AudibleTrafficRadios] [Stations.cpp] v1.1.0**:
+    - [New] HKGN (`radio_station_15_edgerunners`) on every traffic list that holds the nine shared stations, as
+      Growl FM is; added only where the `RadioStation.HKGN` record exists, so 2.31 is untouched. 2.5: 381 stations
+      added across 169 lists (226 before); 2.31: 223 across 166, as 1.0.0.
+    - [Verified] Testing (2.5): every byte check passes, all nine features attach, traffic radios heard, 2 of 9
+      tuned cars at a roundabout on HKGN. Gameplay (2.31): every byte check passes, all nine features attach,
+      stable in the world.
+
 ### [2026-10-09] Session
 - **[AudibleTrafficRadios] [Main.cpp] v1.0.0**:
     - [Change] Version 1.0.0 for the first release (plugin info and source header).

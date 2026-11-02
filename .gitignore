@@ -14,7 +14,7 @@ images/
 .vscode/
 .history/
 *.log
-plugin/build-tune/
+plugin/build-*/
 
 # Python
 __pycache__/

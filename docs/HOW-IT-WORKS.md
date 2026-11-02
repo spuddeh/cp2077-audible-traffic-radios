@@ -2,8 +2,8 @@
 
 A technical write-up for modders: how Cyberpunk 2077 decides whether a traffic car's radio is heard, what this
 plugin changes, and the Wwise techniques it uses, which apply well beyond radios. Addresses are RVAs in the
-Cyberpunk 2077 2.31 executable. Every one is checked byte for byte before use; on any other build the plugin logs
-a line and changes nothing.
+Cyberpunk 2077 2.31 executable; the 2.5 ones, and both builds' tables, are in `plugin/src/Build.hpp`. Every one
+is checked byte for byte before use; on a build no table matches, the plugin logs a line and changes nothing.
 
 ## 1. Why traffic radios are not heard in vanilla
 
@@ -120,7 +120,8 @@ A traffic car picks from its sound set's `matchingStartupRadioStations` (`audioV
 `base\sound\metadata\cooked_metadata.audio_metadata`, 176 sets, none in ep1's). 152 sets share nine stations; Growl
 FM, Impulse, Dark Star and Samizdat are on none, and Royal Blue only on Delamain. The plugin edits the loaded lists
 once (`ResourceLoader::FindToken`, then the `entries` through RTTI), the way the game themes Delamain and the
-Villefort executives: Growl FM on the shared lists, Impulse on the sports and hyper cars, Dark Star on the gang
+Villefort executives: Growl FM on the shared lists, and HKGN (`radio_station_15_edgerunners`, game 2.5, on no
+vanilla list) beside it wherever its `RadioStation.HKGN` record exists, Impulse on the sports and hyper cars, Dark Star on the gang
 and nomad variants, Royal Blue on the executive cars and limousines. Samizdat stays off, as world radios skip it.
 Six lists spell Morro Rock `radio_station 01_att_rock`, which names no station; they are corrected. A list edited
 after load is the one traffic picks from.
@@ -194,7 +195,7 @@ produced one wrong conclusion during development.
   `Music_Radio_Car_Player_DVR` (the player's radio). Wwise keeps one callback per bus; the engine's own meters sit
   on `Music_Systemic_Combat`, `_Police`, `Music_Diagetic_Radios_Vehicle_NPC` and `VO_Important_Somi_Holo`, and
   those three effect-less buses are why the engine's radio meters read 0.
-- **The tuning build** (CMake option `ATR_TUNE`) reads `atr_tune.txt` beside the DLL every 2 s
+- **The tuning build** (`build.ps1 -Variant tune`) reads `atr_tune.txt` beside the DLL every 2 s
   (`levels <bottom> <top>`, `muffle <dB> <low-pass>`, `open 1` for every car fully open, `weights <window> <door>
   <torn-off> <pane>`), logs its per-frame cost by part every 10 s, each car's level and openness, and every gain,
   Q and output the Parametric EQs receive. It is never released. Measured cost of the release features: 1.6 to 6

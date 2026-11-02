@@ -21,9 +21,12 @@ struct StationTheme
     const char* station;
     bool sharedOnly;              // only lists that hold all of kSharedStations
     const char* sets[8];          // sound set name fragments; none means every list the first rule allows
+    const char* record = nullptr; // a station only some game builds have: its RadioStation record, added only
+                                  // where that record exists
 };
 constexpr StationTheme kThemes[] = {
     {"radio_station_12_growl_fm", true, {}},
+    {"radio_station_15_edgerunners", true, {}, "RadioStation.HKGN"},  // HKGN, game 2.5 on
     {"radio_station_14_impulse_fm", true,
      {"rayfield", "herrera", "porsche", "mizutani", "quadra_sport", "quadra_turbo", "kusanagi"}},
     {"radio_station_13_dark_star", true, {"tyger", "bandit", "scavenger", "misfit", "nomad"}},
@@ -48,6 +51,13 @@ void ThemeStations()
         return;
     }
     done = true;
+    bool present[std::size(kThemes)];
+    auto* db = RED4ext::TweakDB::Get();
+    for (size_t i = 0; i < std::size(kThemes); ++i)
+    {
+        RED4ext::Handle<RED4ext::IScriptable> record;
+        present[i] = !kThemes[i].record || (db && db->TryGetRecord(RED4ext::TweakDBID(kThemes[i].record), record));
+    }
     auto* rtti = RED4ext::CRTTISystem::Get();
     auto* cooked = rtti->GetClass("audioCookedMetadataResource");
     auto* vehicle = rtti->GetClass("audioVehicleMetadata");
@@ -101,9 +111,10 @@ void ThemeStations()
             shared = shared && holds(RED4ext::CName(s));
         }
         const std::string name = nameProp->GetValuePtr<RED4ext::CName>(entry.GetPtr())->ToString();
-        for (const auto& theme : kThemes)
+        for (size_t t = 0; t < std::size(kThemes); ++t)
         {
-            bool fits = !theme.sharedOnly || shared;
+            const auto& theme = kThemes[t];
+            bool fits = present[t] && (!theme.sharedOnly || shared);
             if (fits && theme.sets[0])
             {
                 fits = false;

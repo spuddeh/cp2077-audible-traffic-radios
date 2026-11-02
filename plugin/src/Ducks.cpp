@@ -28,9 +28,13 @@ enum class Duck
 Duck SafeLiftDuck(uint32_t aDucker)
 {
     static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!g_build)
+    {
+        return Duck::Unexpected;
+    }
     __try
     {
-        const auto index = Read<uintptr_t>(base + 0x339f7b8);
+        const auto index = Read<uintptr_t>(base + g_build->index);
         const auto buckets = index ? Read<uintptr_t>(index + 0x58 + 0x40) : 0;
         const auto count = index ? Read<uint32_t>(index + 0x58 + 0x48) : 0;
         if (!buckets || !count)

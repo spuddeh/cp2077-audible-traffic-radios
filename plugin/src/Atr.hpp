@@ -13,6 +13,7 @@
 #include <RED4ext/Scripting/Natives/entEntityID.hpp>
 #include <RED4ext/Scripting/Utils.hpp>
 #include <RED4ext/TweakDB.hpp>
+#include "Build.hpp"
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -36,6 +37,7 @@ extern RED4ext::v1::PluginHandle g_handle;
 
 void Log(const std::string& aText);
 uintptr_t ResolveByHash(uint32_t aHash);
+const Build* SelectBuild();
 
 // An address in the game's image, or nullptr when its first bytes are not the expected ones.
 template <typename T>
@@ -51,6 +53,19 @@ T AtRva(uintptr_t aRva, std::initializer_list<uint8_t> aPrologue)
         }
     }
     return reinterpret_cast<T>(address);
+}
+
+template <typename T, size_t N>
+T AtRva(uintptr_t aRva, const uint8_t (&aPrologue)[N])
+{
+    const auto address = reinterpret_cast<uint8_t*>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + aRva);
+    return std::memcmp(address, aPrologue, N) == 0 ? reinterpret_cast<T>(address) : nullptr;
+}
+
+// The image address of a table offset.
+inline uintptr_t Image(uintptr_t aRva)
+{
+    return reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + aRva;
 }
 
 template <typename T>
