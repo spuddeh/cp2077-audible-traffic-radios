@@ -54,6 +54,10 @@ main one for 2.5 and `AudibleTrafficRadios_Game_2.31` for 2.31. Install the one 
 Use it or Immersive NPC Car Stereos, not both: both make traffic cars play music, so with both a car can play
 two at once.
 
+[Immersive Audio Distance](https://www.nexusmods.com/cyberpunk2077/mods/36809) is compatible and recommended. It
+makes traffic car radios fade with distance the way sound does in the open, and each car keeps its own level on top
+of that fade. On its own it does not make traffic radios heard.
+
 ## Build
 
 ```powershell

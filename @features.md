@@ -104,4 +104,12 @@ Every feature is one of two kinds, and a new one is added here as one or the oth
   and call nothing of each other's; revisit only if that author wants their mod to drive this one.
 - [x] More station variety on traffic cars: the stations no shipped list carries go onto themed lists, and the
   six misspelt Morro Rock entries are corrected.
-- [ ] Investigate why only three or four stations are heard on traffic at once. Not a release blocker.
+- [x] Why only three or four stations are heard on traffic at once (2026-11-02, Kabuki, game 2.5): about 6 cars near
+  the player have engine sound and 30% of them start a radio (the game's own chance, kept), and the traffic picker
+  (`RadioSystem::GetRandomStation(ArraySpan)`) sends 60% of picks to a station already playing and, once 4 stations
+  are active, only to those. The last 7 starts in the run all landed on the 2 active stations. Backlog T140.
+- [ ] An even traffic station pick (T140): replace the traffic picker so a car picks evenly from its own list, active
+  or not, police excluded. Its only caller is `TrafficVehicleEmitter::PlayRadio`, so only traffic changes. A new
+  car within earshot then pushes a far, inaudible station out of the four-slot list (nearest first) instead of
+  joining a playing one. Hook by RED4ext hash, an entry in both build tables. Test at Kabuki with the probe:
+  distinct stations within 35 m, and any station within 35 m left without a slot.

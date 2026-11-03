@@ -113,7 +113,7 @@ jobs:
             echo "::warning::No Nexus file_id for artifact '$ART': building the zip for the GitHub release only, and skipping Nexus."
             echo "::notice::A file_id DOES NOT EXIST until the mod's first file has been uploaded to Nexus BY HAND."
             echo "::notice::Upload the zip attached to this release, then read the id off the mod page (Files tab > API Info —"
-            echo "::notice::Nexus labels it 'Group ID'), and set the repository variable '$KEY'"
+            echo "::notice::Nexus labels it 'File ID'), and set the repository variable '$KEY'"
             echo "::notice::(Settings > Secrets and variables > Actions > Variables). Do NOT use the file_id from the"
             echo "::notice::public v1 API — that is a different id space and the wrong value looks entirely plausible."
             echo "first=true" >> "$GITHUB_OUTPUT"
